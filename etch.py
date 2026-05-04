@@ -23,6 +23,18 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
 
+def _build_prompt(description: str, audience: Optional[str]) -> str:
+    """Construct the prompt sent to the image model.
+
+    When audience is None, empty, or whitespace-only, returns the description
+    unchanged (byte-identical to the pre-audience behavior).
+    """
+    if audience is None or not audience.strip():
+        return description
+    # Audience-present branch implemented in Task 3.
+    raise NotImplementedError("audience prompt frame implemented in Task 3")
+
+
 def _cleanup_jobs() -> None:
     now = datetime.now()
     with _jobs_lock:
