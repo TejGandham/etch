@@ -69,7 +69,7 @@ import etch
 
 - [ ] **Step 4: Verify pytest runs and discovers no tests**
 
-Run: `uv run --group dev pytest tests/ -v`
+Run: `pytest tests/ -v`
 Expected: `no tests ran` (or `collected 0 items`), exit code 5 (pytest's "no tests collected" code) or 0. Either is acceptable; we just want pytest to load the file without error.
 
 - [ ] **Step 5: Commit**
@@ -111,7 +111,7 @@ def test_build_prompt_treats_whitespace_audience_as_none():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run --group dev pytest tests/test_etch.py -v`
+Run: `pytest tests/test_etch.py -v`
 Expected: 3 failures with `AttributeError: module 'etch' has no attribute '_build_prompt'`.
 
 - [ ] **Step 3: Implement `_build_prompt` for the no-audience case**
@@ -133,7 +133,7 @@ def _build_prompt(description: str, audience: Optional[str]) -> str:
 
 - [ ] **Step 4: Run tests — first three should pass**
 
-Run: `uv run --group dev pytest tests/test_etch.py -v`
+Run: `pytest tests/test_etch.py -v`
 Expected: 3 passed.
 
 - [ ] **Step 5: Commit**
@@ -188,7 +188,7 @@ def test_build_prompt_includes_tailoring_directive():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --group dev pytest tests/test_etch.py -v`
+Run: `pytest tests/test_etch.py -v`
 Expected: 3 new failures (NotImplementedError or assertion failures).
 
 - [ ] **Step 3: Complete `_build_prompt`**
@@ -215,7 +215,7 @@ def _build_prompt(description: str, audience: Optional[str]) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --group dev pytest tests/test_etch.py -v`
+Run: `pytest tests/test_etch.py -v`
 Expected: 6 passed.
 
 - [ ] **Step 5: Commit**
@@ -256,7 +256,7 @@ def test_build_prompt_accepts_audience_at_cap():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run --group dev pytest tests/test_etch.py -v`
+Run: `pytest tests/test_etch.py -v`
 Expected: 2 new failures (`AttributeError: ... no attribute 'MAX_AUDIENCE_LEN'`).
 
 - [ ] **Step 3: Add the cap constant and length check**
@@ -294,7 +294,7 @@ def _build_prompt(description: str, audience: Optional[str]) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run --group dev pytest tests/test_etch.py -v`
+Run: `pytest tests/test_etch.py -v`
 Expected: 8 passed.
 
 - [ ] **Step 5: Commit**
@@ -431,12 +431,12 @@ def start_diagram_job(
 
 - [ ] **Step 3: Run all tests to confirm no regression**
 
-Run: `uv run --group dev pytest tests/ -v`
+Run: `pytest tests/ -v`
 Expected: 8 passed.
 
 - [ ] **Step 4: Smoke-test that the module still imports and the MCP tool decorator did not break**
 
-Run: `uv run python -c "import etch; print(etch.start_diagram_job.__doc__[:60])"`
+Run: `python -c "import etch; print(etch.start_diagram_job.__doc__[:60])"`
 Expected: prints the first ~60 chars of the docstring (`Start an async diagram-generation job...`). The `@mcp.tool()` decorator wraps the function but the underlying docstring stays accessible; this is just a sanity check that the import path is healthy.
 
 - [ ] **Step 5: Commit**
@@ -485,7 +485,7 @@ Do NOT activate when:
 
 - [ ] **Step 2: Verify the file is well-formed markdown**
 
-Run: `uv run python -c "import pathlib; p = pathlib.Path('skills/etch/SKILL.md'); content = p.read_text(); assert content.startswith('---'); assert '\n---\n' in content; print('frontmatter ok')"`
+Run: `python -c "import pathlib; p = pathlib.Path('skills/etch/SKILL.md'); content = p.read_text(); assert content.startswith('---'); assert '\n---\n' in content; print('frontmatter ok')"`
 Expected: prints `frontmatter ok`.
 
 - [ ] **Step 3: Commit**
@@ -675,7 +675,7 @@ After dispatching the job, poll `check_job_status` every ~10 seconds. Generation
 
 - [ ] **Step 2: Verify final skill file is complete**
 
-Run: `uv run python -c "import pathlib; lines = pathlib.Path('skills/etch/SKILL.md').read_text().splitlines(); print(f'lines={len(lines)}'); print('has all six anchors:', all(a in '\n'.join(lines) for a in ['### Architect', '### Developer', '### Product manager', '### End user', '### Executive', '### Ops / SRE']))"`
+Run: `python -c "import pathlib; lines = pathlib.Path('skills/etch/SKILL.md').read_text().splitlines(); print(f'lines={len(lines)}'); print('has all six anchors:', all(a in '\n'.join(lines) for a in ['### Architect', '### Developer', '### Product manager', '### End user', '### Executive', '### Ops / SRE']))"`
 Expected: `lines=` shows roughly 130–180 lines and `has all six anchors: True`.
 
 - [ ] **Step 3: Commit**
@@ -713,7 +713,7 @@ For audience-aware generation from inside Claude Code, this repo also ships an `
 
 - [ ] **Step 3: Verify README still renders cleanly**
 
-Run: `uv run python -c "p = open('README.md').read(); assert 'audience=None' in p; assert '## Skill' in p; print('README ok')"`
+Run: `python -c "p = open('README.md').read(); assert 'audience=None' in p; assert '## Skill' in p; print('README ok')"`
 Expected: `README ok`.
 
 - [ ] **Step 4: Commit**
@@ -731,12 +731,12 @@ git -c user.name='TejGandham' -c user.email='TejGandham@users.noreply.github.com
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `uv run --group dev pytest tests/ -v`
+Run: `pytest tests/ -v`
 Expected: 8 passed, no failures, no warnings about deprecated APIs introduced by this change.
 
 - [ ] **Step 2: Verify the MCP module imports cleanly**
 
-Run: `uv run python -c "import etch; assert callable(etch._build_prompt); assert hasattr(etch, 'MAX_AUDIENCE_LEN'); print('module ok')"`
+Run: `python -c "import etch; assert callable(etch._build_prompt); assert hasattr(etch, 'MAX_AUDIENCE_LEN'); print('module ok')"`
 Expected: `module ok`.
 
 - [ ] **Step 3: Verify the skill file is intact and well-structured**
@@ -744,7 +744,7 @@ Expected: `module ok`.
 Run:
 
 ```bash
-uv run python <<'EOF'
+python <<'EOF'
 import pathlib
 content = pathlib.Path('skills/etch/SKILL.md').read_text()
 required = [
@@ -772,7 +772,7 @@ Expected: `skill complete`.
 Run:
 
 ```bash
-uv run python <<'EOF'
+python <<'EOF'
 import etch
 # Old-style call: prompt should be exactly the description.
 assert etch._build_prompt("hello world", None) == "hello world"
