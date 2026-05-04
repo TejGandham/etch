@@ -20,7 +20,7 @@ Install [uv](https://docs.astral.sh/uv/) (`uv` ships `uvx`). Get a Google AI Stu
 }
 ```
 
-`uvx` builds an isolated env on first launch and caches it; no manual `pip install` step. Swap `--from /path/to/etch` for `--from git+https://github.com/<owner>/etch` to install from git instead.
+`uvx` builds an isolated env on first launch and caches it; no manual install step. Swap `--from /path/to/etch` for `--from git+https://github.com/<owner>/etch` to install from git instead.
 
 ## Tools
 
