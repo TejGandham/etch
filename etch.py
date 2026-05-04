@@ -68,6 +68,7 @@ def _run_generation(
     job_id: str,
     api_key: str,
     description: str,
+    audience: Optional[str],
     aspect_ratio: str,
     resolution: str,
     output_dir: Path,
@@ -76,10 +77,12 @@ def _run_generation(
         with _jobs_lock:
             _jobs[job_id]["status"] = "generating"
 
+        prompt = _build_prompt(description, audience)
+
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model=MODEL,
-            contents=[types.Content(role="user", parts=[types.Part(text=description)])],
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(
                 max_output_tokens=32768,
                 response_modalities=["IMAGE"],
@@ -124,6 +127,7 @@ def start_diagram_job(
     aspect_ratio: str = "16:9",
     resolution: str = "2K",
     output_dir: Optional[str] = None,
+    audience: Optional[str] = None,
 ) -> str:
     """Start an async diagram-generation job. Returns a job_id; poll check_job_status.
 
@@ -132,6 +136,12 @@ def start_diagram_job(
         aspect_ratio: 1:1, 16:9, 9:16, 4:3, 3:4, or 21:9.
         resolution: 1K or 2K.
         output_dir: Where to save the PNG (defaults to cwd).
+        audience: Optional free-form description of the target audience.
+            When provided, the description is wrapped with a frame instructing
+            the model to tailor abstraction, vocabulary, emphasis, and visual
+            register accordingly. Skill callers (see skills/etch/SKILL.md) are
+            expected to author rich audience prose; raw human-typed audience
+            strings ("for developers") also work but produce weaker steering.
     """
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -140,6 +150,9 @@ def start_diagram_job(
         raise ValueError(f"aspect_ratio must be one of {sorted(ALLOWED_ASPECT_RATIOS)}")
     if resolution not in ALLOWED_RESOLUTIONS:
         raise ValueError(f"resolution must be one of {sorted(ALLOWED_RESOLUTIONS)}")
+
+    # Validate audience eagerly: raises ValueError if over cap, before queuing.
+    _build_prompt(description, audience)
 
     _cleanup_jobs()
     job_id = str(uuid.uuid4())
@@ -150,7 +163,7 @@ def start_diagram_job(
 
     threading.Thread(
         target=_run_generation,
-        args=(job_id, api_key, description, aspect_ratio, resolution, out_dir),
+        args=(job_id, api_key, description, audience, aspect_ratio, resolution, out_dir),
         daemon=True,
     ).start()
 
