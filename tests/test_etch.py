@@ -21,3 +21,33 @@ def test_build_prompt_treats_whitespace_audience_as_none():
     """Whitespace-only audience behaves like None."""
     description = "Some description."
     assert etch._build_prompt(description, "   \n\t  ") == description
+
+
+def test_build_prompt_with_audience_wraps_in_frame():
+    """When audience is present, prompt is wrapped with the audience frame."""
+    description = "Three services and a database."
+    audience = "Reader is a software architect evaluating system structure."
+    result = etch._build_prompt(description, audience)
+
+    assert "[Target audience]" in result
+    assert "[Diagram]" in result
+    assert audience in result
+    assert description in result
+    # Audience block must precede diagram block.
+    assert result.index("[Target audience]") < result.index("[Diagram]")
+    assert result.index(audience) < result.index(description)
+
+
+def test_build_prompt_strips_audience_whitespace():
+    """Surrounding whitespace on the audience string is stripped before framing."""
+    description = "A diagram."
+    result = etch._build_prompt(description, "  Some audience.  \n")
+    assert "  Some audience.  " not in result
+    assert "Some audience." in result
+
+
+def test_build_prompt_includes_tailoring_directive():
+    """The frame must instruct the model to tailor its output."""
+    result = etch._build_prompt("desc", "exec audience")
+    assert "Tailor" in result
+    assert "audience" in result

@@ -31,8 +31,13 @@ def _build_prompt(description: str, audience: Optional[str]) -> str:
     """
     if audience is None or not audience.strip():
         return description
-    # Audience-present branch implemented in Task 3.
-    raise NotImplementedError("audience prompt frame implemented in Task 3")
+    audience_text = audience.strip()
+    return (
+        f"[Target audience]\n{audience_text}\n"
+        "Tailor abstraction level, vocabulary, what to emphasize, "
+        "what to omit, and visual register to suit this audience.\n\n"
+        f"[Diagram]\n{description}"
+    )
 
 
 def _cleanup_jobs() -> None:
