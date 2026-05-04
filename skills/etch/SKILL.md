@@ -55,9 +55,26 @@ Confidence is **low** when none of the above are present and the request is gene
 
 User-provided `aspect_ratio` or `resolution` always wins over inference. Never override an explicit choice.
 
+## House style (always applied)
+
+A small house-style block is prepended to every `audience` parameter — *regardless* of which anchor below is selected. It carries cross-image consistency (palette, paper feel, edge-to-edge framing) so etch's outputs read as a family even when the per-audience register differs. The full prose, sent verbatim:
+
+```
+House style — applies to every etch image regardless of audience:
+- Background: warm cream or soft off-white. Never pure white. Subtle paper grain is welcome; sterile digital flatness is not.
+- Lines and text: soft charcoal. Never pure #000. Allow gentle line-weight variation (medium for primary forms, thinner for secondary detail).
+- Palette: warm and intentional — golden yellows, fresh greens, calm sky and soft navy blues, coral and peach oranges, warm grays, soft browns. Avoid neon, cold harsh tones, garish saturation, and clashing combinations.
+- Framing: NO frame, border, or edge decoration. The image IS the artifact, not a photo of one. Content extends fully to the edges.
+- Color application: watercolor-like washes with slight transparency; colors may very slightly escape line boundaries to register as hand-applied rather than vector-perfect.
+- Typography: warm and readable, never sharp/sterile. Headings can carry a hand-lettered feel; body text stays clean.
+- Avoid: corporate clip-art aesthetics, drop shadow around the whole image as if it's a photo, sterile vector perfection, rigid mechanical grid alignment, uniform line weights everywhere.
+```
+
+The per-audience register (below) layers on top of the house style. Where the audience anchor specifies a register that conflicts with house style (for example, a technical reference document needing crisper labels than a watercolor wash), the audience anchor wins for that conflict and the house-style elements that don't conflict still apply.
+
 ## The six audience anchors
 
-When the inferred or selected audience matches one of these six, embed the corresponding prose block **verbatim** as the `audience` parameter. The prose is engineered to steer Gemini's image model on abstraction, vocabulary, emphasis, and visual register; do not paraphrase.
+When the inferred or selected audience matches one of these six, embed the house-style block above followed by the corresponding anchor prose **verbatim** as the `audience` parameter. The prose is engineered to steer Gemini's image model on abstraction, vocabulary, emphasis, and visual register; do not paraphrase.
 
 ### Architect
 

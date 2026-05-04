@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/etch_logo.png" alt="etch" width="180" />
+</p>
+
 # etch
 
 ![how etch works for you](images/etch_user_journey.png)
