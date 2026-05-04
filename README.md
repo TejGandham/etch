@@ -1,6 +1,6 @@
 # etch
 
-![etch](images/etch.png)
+![how etch works for you](images/etch_user_journey.png)
 
 Etch your codebase into a printable diagram. An MCP server that turns code and architecture descriptions into PNGs using Google's Nano Banana Pro (Gemini 3 Pro Image).
 
