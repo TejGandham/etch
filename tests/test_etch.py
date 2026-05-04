@@ -51,3 +51,19 @@ def test_build_prompt_includes_tailoring_directive():
     result = etch._build_prompt("desc", "exec audience")
     assert "Tailor" in result
     assert "audience" in result
+
+
+def test_build_prompt_rejects_audience_over_cap():
+    """An audience string over the cap must raise ValueError."""
+    description = "A diagram."
+    too_long = "x" * (etch.MAX_AUDIENCE_LEN + 1)
+    with pytest.raises(ValueError, match="audience"):
+        etch._build_prompt(description, too_long)
+
+
+def test_build_prompt_accepts_audience_at_cap():
+    """An audience string exactly at the cap must succeed."""
+    description = "A diagram."
+    at_cap = "x" * etch.MAX_AUDIENCE_LEN
+    result = etch._build_prompt(description, at_cap)
+    assert at_cap in result

@@ -16,6 +16,7 @@ ALLOWED_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "21:9"}
 ALLOWED_RESOLUTIONS = {"1K", "2K"}
 MAX_JOBS = 10
 JOB_TTL = timedelta(minutes=10)
+MAX_AUDIENCE_LEN = 4000
 
 mcp = FastMCP("etch")
 
@@ -32,6 +33,11 @@ def _build_prompt(description: str, audience: Optional[str]) -> str:
     if audience is None or not audience.strip():
         return description
     audience_text = audience.strip()
+    if len(audience_text) > MAX_AUDIENCE_LEN:
+        raise ValueError(
+            f"audience must be {MAX_AUDIENCE_LEN} characters or fewer "
+            f"(got {len(audience_text)})"
+        )
     return (
         f"[Target audience]\n{audience_text}\n"
         "Tailor abstraction level, vocabulary, what to emphasize, "
