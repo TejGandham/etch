@@ -94,3 +94,51 @@ Reader is a C-level executive, board member, or senior non-technical stakeholder
 ```
 Reader is an SRE, on-call engineer, or operations lead responsible for runtime health. Show runtime topology (services, datastores, queues, caches, load balancers), failure modes and their blast radius, observability hooks (where logs, metrics, and traces emit from), escalation paths (who pages when what fails), and protocol or port annotations on key edges. Suppress build-time concerns, source layout, and anything not relevant to a system running in production. Use precise operational terminology (p99 latency, leader election, DLQ depth, saturation). Visual register: reference-document style, suitable for printing and pinning near a workstation, monospace technical labels, clear color-coding for service tiers (critical-path vs. supporting), legend if useful. The reader should be able to use the diagram during an incident.
 ```
+
+## Canvas inference
+
+| Signal in context | aspect_ratio | resolution |
+|-|-|-|
+| README, blog post, slide deck, "presentation" | 16:9 | 2K |
+| Poster, print, "pin it up", "wall" | 3:4 | 2K |
+| Banner, header, "wide", "panoramic" | 21:9 | 2K |
+| Mobile, social card, "share" | 9:16 (portrait emphasis) or 1:1 | 2K |
+| "Quick draft", "rough", explicit speed signal | (keep above ratio) | 1K |
+| Nothing detectable | 16:9 | 2K |
+
+User-provided `aspect_ratio` / `resolution` always win over inference.
+
+## Interview format (only when audience inference fails)
+
+Send a single message, multiple choice. Never multi-step:
+
+```
+Who's this diagram for? Quick pick:
+  A. Architect — boundaries, layers, deployment
+  B. Developer — modules, data flow, APIs
+  C. Product manager — features, journeys, value
+  D. End user — what-it-does, plain language
+  E. Executive / stakeholder — big picture, business outcomes
+  F. Ops / SRE — runtime, failure modes, runbook-friendly
+  G. Other (describe)
+```
+
+A–F map to the six anchor prose blocks above. G triggers the on-the-fly path: write a 3–5 sentence guidance block matching the structure (who the reader is → what to emphasize → what to suppress → visual register), then proceed.
+
+## Calling the MCP
+
+The etch MCP exposes two tools:
+
+- `start_diagram_job(description, aspect_ratio="16:9", resolution="2K", output_dir=None, audience=None)` — returns a `job_id` immediately.
+- `check_job_status(job_id)` — poll every ~10s. Returns `queued (Xs)`, `generating (Xs)`, `complete (Xs) — saved to <path>`, or `failed (Xs): <reason>`.
+
+Pass the full audience prose block (verbatim from the anchor list, or your on-the-fly block) as the `audience` argument. Pass the description the user wrote — do NOT modify it. Pass the inferred (or user-specified) `aspect_ratio` and `resolution`.
+
+After dispatching the job, poll `check_job_status` every ~10 seconds. Generation typically takes 30–60s. Surface the final result line to the user: either `Generated for <audience-name>, <ratio> <res> — saved to <path>`, or the failure reason verbatim.
+
+## What this skill does NOT do
+
+- Compose or edit the description itself. The user (or the brainstorming skill) supplies it.
+- Multi-audience or comparison diagrams. One diagram, one audience.
+- Any caching or persistence of audience choices across calls. Each invocation is independent.
+- Style controls beyond what the audience prose conveys (no `style="blueprint"` knob — register is in the prose).
