@@ -1,0 +1,20 @@
+[project]
+name = "etch"
+version = "0.1.0"
+description = "Diagram generation for codebases using Nano Banana Pro"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.0.0",
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+etch = "etch:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["etch"]
