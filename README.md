@@ -35,7 +35,7 @@ Generation is async to stay within MCP client tool-call timeouts:
 
 ## Skill
 
-For audience-aware generation from inside Claude Code, this repo ships an `etch` skill at `skills/etch/SKILL.md`. The skill activates when you ask for a technical or architecture diagram aimed at a specific audience (architect, developer, PM, end user, executive, ops/SRE, or anything else describable), infers the audience and canvas shape from context, runs a single multi-choice interview only when context is too thin, and calls the MCP with a rich `audience` prose block. The MCP itself is audience-agnostic — the skill carries the per-audience guidance, which means future skills (or different clients) can call the MCP without buying into this audience model.
+For audience-aware generation from inside Claude Code, this repo ships an `etch` skill at `skills/etch/SKILL.md`. The skill activates when you ask for a technical or architecture diagram aimed at a specific audience (architect, developer, PM, end user, executive, ops/SRE, or anything else describable). It infers the audience and canvas shape from context, runs a single multi-choice interview only when context is too thin, and calls the MCP with a rich `audience` prose block. The MCP itself is audience-agnostic — the skill carries the per-audience guidance, which means future skills (or different clients) can call the MCP without buying into this audience model.
 
 ## How it works
 
