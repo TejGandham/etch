@@ -8,9 +8,17 @@ Etch your codebase into a printable diagram, tailored to whoever needs to see it
 
 The same description of a single-page app's login-to-dashboard journey, etched for three audiences:
 
-| Developer | Product manager | End user |
-|-|-|-|
-| ![Developer view: technical sequence with components, REST calls, JWT, and JSON payloads](images/etch_example_developer.png) | ![Product manager view: four-stage feature and capability map with value labels](images/etch_example_pm.png) | ![End user view: illustrated four-step onboarding poster, jargon-free](images/etch_example_end_user.png) |
+**Developer** — onboarding to this codebase
+
+![Developer view: technical sequence with components, REST calls, JWT, and JSON payloads](images/etch_example_developer.png)
+
+**Product manager** — presenting in a product review
+
+![Product manager view: four-stage feature and capability map with value labels](images/etch_example_pm.png)
+
+**End user** — opening the app for the first time
+
+![End user view: illustrated four-step onboarding poster, jargon-free](images/etch_example_end_user.png)
 
 Same description in. Whichever diagram each audience needs out.
 
