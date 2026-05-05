@@ -33,9 +33,9 @@ Generation is async to stay within MCP client tool-call timeouts:
 
 `aspect_ratio` ∈ `{1:1, 16:9, 9:16, 4:3, 3:4, 21:9}`. `resolution` ∈ `{1K, 2K}`. The PNG is written to `output_dir` (default cwd); the server and client must share a filesystem.
 
-## Skill
+## Skill (optional but recommended)
 
-For audience-aware generation from inside Claude Code, this repo ships an `etch` skill at `skills/etch/SKILL.md`. The skill activates when you ask for a technical or architecture diagram aimed at a specific audience (architect, developer, PM, end user, executive, ops/SRE, or anything else describable). It infers the audience and canvas shape from context, runs a single multi-choice interview only when context is too thin, and calls the MCP with a rich `audience` prose block. The MCP itself is audience-agnostic — the skill carries the per-audience guidance, which means future skills (or different clients) can call the MCP without buying into this audience model.
+The MCP works on its own; the `etch` skill at `skills/etch/SKILL.md` is an optional layer that adds audience-aware generation inside Claude Code — recommended when you want diagrams tailored to specific audiences without spelling out the persona every time. The skill activates when you ask for a technical or architecture diagram aimed at a specific audience (architect, developer, PM, end user, executive, ops/SRE, or anything else describable). It infers the audience and canvas shape from context, runs a single multi-choice interview only when context is too thin, and calls the MCP with a rich `audience` prose block. The MCP itself is audience-agnostic — the skill carries the per-audience guidance, which means future skills (or different clients) can call the MCP without buying into this audience model.
 
 ## How it works
 

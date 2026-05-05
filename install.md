@@ -38,7 +38,7 @@ Ask your agent: *"etch a diagram of three boxes connected by arrows."* If etch i
 
 ## Skill (optional but recommended)
 
-The `etch` skill at `skills/etch/SKILL.md` adds audience-aware diagram generation. If your agent has a skills directory, point it at `skills/etch/` (or symlink it in). The skill activates on requests like *"diagram of the auth service for a runbook"* and chooses the right audience prose automatically.
+The `etch` skill at `skills/etch/SKILL.md` adds audience-aware diagram generation — optional, but recommended if you want diagrams tailored to specific personas (architect, exec, end user, runbook reader, etc.) without rewriting the prompt each time. If your agent has a skills directory, point it at `skills/etch/` (or symlink it in). The skill activates on requests like *"diagram of the auth service for a runbook"* and chooses the right audience prose automatically.
 
 ## Troubleshooting
 
