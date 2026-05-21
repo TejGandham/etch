@@ -1,9 +1,20 @@
 import os
+import sys
+import asyncio
+import uuid
+import base64
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI
+from datetime import datetime
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
+
+# Add parent directory to path to reuse etch.py
+sys.path.append(str(Path(__file__).parent.parent.parent.resolve()))
+import etch
 
 app = FastAPI(title="Etch API")
 
@@ -14,6 +25,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Configure output directory
+OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(OUTPUT_DIR)), name="static")
+
+# Local active jobs in-memory cache
+jobs_cache: dict[str, dict] = {}
 
 class HealthResponse(BaseModel):
     status: str
@@ -75,4 +94,134 @@ async def scan_codebase(req: ScanRequest):
             pass
             
     return ScanResponse(is_valid=True, tree=tree_text, readme=readme_text)
+
+class DiagramRequest(BaseModel):
+    description: str
+    aspect_ratio: str = "16:9"
+    resolution: str = "2K"
+    audience: Optional[str] = None
+    codebase_path: Optional[str] = None
+
+def execute_generation_task(job_id: str, req: DiagramRequest):
+    try:
+        jobs_cache[job_id]["status"] = "generating"
+        
+        # Inject codebase context if supplied
+        full_description = req.description
+        if req.codebase_path:
+            folder = Path(req.codebase_path)
+            if folder.exists():
+                tree_text = build_file_tree(folder, max_depth=2)
+                full_description = (
+                    f"[Local Codebase Structure]\n{tree_text}\n\n"
+                    f"[User Description]\n{req.description}"
+                )
+        
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key or api_key == "mock":
+            # Fallback mock mode
+            import time
+            time.sleep(1)
+            file_path = OUTPUT_DIR / f"diagram_{datetime.now():%Y%m%d_%H%M%S}_{job_id[:8]}.png"
+            DUMMY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            file_path.write_bytes(base64.b64decode(DUMMY_PNG_B64))
+            
+            with etch._jobs_lock:
+                etch._jobs[job_id] = {
+                    "status": "complete",
+                    "created": datetime.now(),
+                    "file_path": str(file_path)
+                }
+            jobs_cache[job_id]["status"] = "complete"
+            jobs_cache[job_id]["imageUrl"] = f"/static/{file_path.name}"
+            return
+
+        with etch._jobs_lock:
+            etch._jobs[job_id] = {"status": "queued", "created": datetime.now()}
+
+        # Run generator
+        etch._run_generation(
+            job_id=job_id,
+            api_key=api_key,
+            description=full_description,
+            audience=req.audience,
+            aspect_ratio=req.aspect_ratio,
+            resolution=req.resolution,
+            output_dir=OUTPUT_DIR
+        )
+        
+        # Check output
+        if etch._jobs.get(job_id) and etch._jobs[job_id]["status"] == "complete":
+            file_path = Path(etch._jobs[job_id]["file_path"])
+            jobs_cache[job_id]["status"] = "complete"
+            jobs_cache[job_id]["imageUrl"] = f"/static/{file_path.name}"
+        else:
+            err = etch._jobs.get(job_id, {}).get("error", "Unknown error")
+            jobs_cache[job_id]["status"] = "failed"
+            jobs_cache[job_id]["error"] = err
+    except Exception as e:
+        jobs_cache[job_id]["status"] = "failed"
+        jobs_cache[job_id]["error"] = str(e)
+
+@app.post("/api/jobs")
+async def start_job(req: DiagramRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    jobs_cache[job_id] = {
+        "status": "queued",
+        "created_at": datetime.now().isoformat(),
+        "description": req.description,
+        "aspect_ratio": req.aspect_ratio,
+        "resolution": req.resolution,
+        "audience": req.audience,
+        "imageUrl": None,
+        "error": None
+    }
+    background_tasks.add_task(execute_generation_task, job_id, req)
+    return {"job_id": job_id}
+
+@app.get("/api/jobs/stream/{job_id}")
+async def stream_job_status(job_id: str):
+    if job_id not in jobs_cache:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    async def event_generator():
+        last_status = None
+        while True:
+            job = jobs_cache.get(job_id)
+            if not job:
+                break
+            current_status = job["status"]
+            
+            if current_status != last_status:
+                last_status = current_status
+                payload = {
+                    "status": current_status,
+                    "imageUrl": job.get("imageUrl"),
+                    "error": job.get("error")
+                }
+                yield {"event": "status", "data": payload}
+                
+            if current_status in ("complete", "failed"):
+                break
+                
+            await asyncio.sleep(0.5)
+            
+    return EventSourceResponse(event_generator())
+
+@app.get("/api/history")
+async def get_history():
+    history_items = []
+    for jid, job in sorted(jobs_cache.items(), key=lambda x: x[1]["created_at"], reverse=True):
+        if job["status"] == "complete":
+            history_items.append({
+                "id": jid,
+                "prompt": job["description"],
+                "audience": job["audience"],
+                "aspect_ratio": job["aspect_ratio"],
+                "resolution": job["resolution"],
+                "imageUrl": job["imageUrl"],
+                "created_at": job["created_at"]
+            })
+    return history_items
+
 
