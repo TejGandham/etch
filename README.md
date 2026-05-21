@@ -6,6 +6,8 @@
 
 Etch your codebase into a printable diagram, tailored to whoever needs to see it.
 
+![Hero: the etch penguin sketching on an easel; the same description fans out into three audience-shaped diagrams — developer, product manager, end user](images/etch_hero.png)
+
 The same description of a single-page app's login-to-dashboard journey, etched for three audiences:
 
 **Developer** — onboarding to this codebase

@@ -34,15 +34,24 @@ The skill makes one inference attempt and at most one interview, then commits. I
 
 3. **Infer canvas (`aspect_ratio` and `resolution`) from the same signals** (see Canvas inference table below).
 
-4. **Branch on inference confidence:**
-   - **Confident** (at least one direct signal present): announce the inferred audience and canvas, then fire the call. Example: `Reading this as ops/SRE for a runbook print — 3:4, 2K. Generating now…`
-   - **Not confident** (request is generic, "draw a diagram of the system" with no other signals): run the interview (see below), then announce + proceed once the user picks.
+4. **Pick the house-style register** (see "Which register to use" above). If the signals favor one register cleanly, announce it. Otherwise present the binary choice to the user in one short line:
 
-5. **Build the audience guidance string.**
-   - If the inferred or selected audience matches one of the six anchors below, embed the anchor's prose block verbatim as the `audience` parameter.
+   ```
+   Style: storybook (default — warm watercolor, matches existing brand assets) or enterprise stark (navy + brass, clean editorial)?
+   ```
+
+   Default to storybook if the user does not answer.
+
+5. **Branch on inference confidence:**
+   - **Confident** (at least one direct signal present): announce the inferred audience, register, and canvas, then fire the call. Example: `Reading this as ops/SRE for a runbook print, enterprise-stark register — 3:4, 2K. Generating now…`
+   - **Not confident** (request is generic, "draw a diagram of the system" with no other signals): run the interview (see below) plus the register pick from step 4, then announce + proceed once the user picks.
+
+6. **Build the audience guidance string.**
+   - Prepend the chosen register's house-style block verbatim (storybook or enterprise stark — see "House style" section).
+   - Then embed the audience anchor's prose block verbatim as the rest of the `audience` parameter.
    - For "Other (describe)" or off-list audiences, write a short (3–5 sentence) guidance block on the fly using the same shape: who the reader is, what to emphasize, what to suppress, what visual register fits.
 
-6. **Call `start_diagram_job`** with the description, the audience prose, and the inferred canvas. Poll `check_job_status` every ~10 seconds until the job is `complete` or `failed`. Report the final path (or the failure reason) to the user.
+7. **Call `start_diagram_job`** with the description, the audience prose (register + anchor), and the inferred canvas. Poll `check_job_status` every ~10 seconds until the job is `complete` or `failed`. Report the final path (or the failure reason) to the user.
 
 ## Inference confidence — what counts as confident
 
@@ -55,9 +64,13 @@ Confidence is **low** when none of the above are present and the request is gene
 
 User-provided `aspect_ratio` or `resolution` always wins over inference. Never override an explicit choice.
 
-## House style (always applied)
+## House style — pick one per image
 
-A small house-style block is prepended to every `audience` parameter — *regardless* of which anchor below is selected. It carries cross-image consistency (palette, paper feel, edge-to-edge framing) so etch's outputs read as a family even when the per-audience register differs. The full prose, sent verbatim:
+Two house-style registers are supported. Exactly one is prepended to every `audience` parameter (alongside the per-audience anchor). They give different visual feels and target different output contexts. **The default is storybook** unless the user picks otherwise.
+
+### Storybook (default — warm illustrated)
+
+The original etch register. Use for friendly developer-tool branding, marketing/hero imagery, user-journey illustrations, README artwork, anything where warmth and character matter more than corporate restraint. Matches the existing etch brand assets in `images/` (mascot, user-journey illustration, example diagrams). The full prose, sent verbatim:
 
 ```
 House style — applies to every etch image regardless of audience:
@@ -70,11 +83,40 @@ House style — applies to every etch image regardless of audience:
 - Avoid: corporate clip-art aesthetics, drop shadow around the whole image as if it's a photo, sterile vector perfection, rigid mechanical grid alignment, uniform line weights everywhere.
 ```
 
-The per-audience register (below) layers on top of the house style. Where the audience anchor specifies a register that conflicts with house style (for example, a technical reference document needing crisper labels than a watercolor wash), the audience anchor wins for that conflict and the house-style elements that don't conflict still apply.
+### Enterprise stark (alternate — clean editorial)
+
+Use when the reader expects a serious authored technical document and the watercolor register would feel unprofessional: enterprise architecture reviews, board decks, runbook references, security review artifacts, B2B platform documentation. Trades warmth for the polish of a high-end engineering publication. The full prose, sent verbatim:
+
+```
+House style — applies to every etch image regardless of audience:
+
+Visual register: editorial technical illustration. Reference quality: Increment Magazine technical articles, Stripe Press book interior diagrams, "Designing Data-Intensive Applications", Distill.pub. Authored and opinionated. NOT watercolor / storybook / hand-drawn / paper-grain. NOT flat-corporate / clinical / sterile / PowerPoint-default.
+
+- Background: warm off-white / pale cream (~#F4EFE6). Never pure white. No paper texture or grain.
+- Lines and primary type: deep ink near-black (~#0E1726). Crisp uniform-weight strokes. No hand-drawn wobble, no watercolor bleed, no color escaping outside line boundaries.
+- Shapes: precise rectangles with subtle 4–6px rounded corners. Geometry is sharp.
+- Palette (navy-dominant with one warm focal accent — classic-confident, reads as a serious authored technical document):
+  - Lane / section header blocks: navy tones varying in depth — deepest navy (~#0F2347), mid navy (~#243E66), dusty indigo (~#4F6691). Cream-on-color labels.
+  - Signature accent (used on the most important boundary or focal element, on key identifier highlights, and on focal markers like a star or dot on a critical arrow): warm brass / antique gold (~#B68B3E). The SINGLE warm color in an otherwise cool composition. Classic navy + brass pairing — reads expensive and confident.
+  - Module-card interiors: pale cream, ink-navy labels.
+- Typography: characterful modern sans (Söhne, GT America, Inter Display feel) for headings and labels; monospaced (JetBrains Mono, IBM Plex Mono feel) for code identifiers, file paths, endpoints, model names, and any text representing literal source. Strong size hierarchy — section titles much larger than body labels.
+- Framing: NO frame, border, or edge decoration. The image IS the artifact, not a photo of one. Content extends fully to the edges.
+- One expressive design moment per diagram: the focal element (often an external system boundary, an AI call, or the inciting action) gets a subtle halftone or stippled fill in the brass accent AND a brass border — making the focal point visually unmistakable. Just that one element gets the special treatment.
+- Negative space: confident. Don't pack wall-to-wall. Let the major regions breathe.
+- Avoid absolutely: watercolor, painterly washes, color bleed outside lines, hand-lettering, paper grain, storybook illustration AESTHETIC AND grayscale corporate, drab safe palette, uniform type sizing, sterile flat clinical register, "PowerPoint default" look, decorative flourishes that aren't structural.
+```
+
+### Which register to use
+
+- **Storybook** when: the project has illustrated brand assets the image needs to match; the request is a hero, landing-page, or marketing image; the audience is the End user anchor; the user asks for something "warm", "friendly", "illustrated", or "playful".
+- **Enterprise stark** when: the user explicitly asks for "enterprise", "stark", "professional", "boardroom", "B2B", or "serious"; the destination is a board deck, an executive review, a security review, or a B2B platform doc; the existing project artifacts read as enterprise/financial-services rather than indie/illustrated.
+- **Otherwise** (genuinely ambiguous): present the choice. See Flow step 4 below.
+
+The per-audience anchor still layers on top of whichever register is chosen. Where an anchor specifies a register that conflicts with the chosen house style (for example, the End user anchor's warm friendly tones overriding navy-dominance), the audience anchor wins for that conflict and the house-style elements that don't conflict still apply.
 
 ## The six audience anchors
 
-When the inferred or selected audience matches one of these six, embed the house-style block above followed by the corresponding anchor prose **verbatim** as the `audience` parameter. The prose is engineered to steer Gemini's image model on abstraction, vocabulary, emphasis, and visual register; do not paraphrase.
+When the inferred or selected audience matches one of these six, embed the chosen register's house-style block (storybook or enterprise stark — see Flow step 4) followed by the corresponding anchor prose **verbatim** as the `audience` parameter. The prose is engineered to steer Gemini's image model on abstraction, vocabulary, emphasis, and visual register; do not paraphrase.
 
 ### Architect
 
