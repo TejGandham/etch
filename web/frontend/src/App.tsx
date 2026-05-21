@@ -14,6 +14,7 @@ const App: React.FC = () => {
     resolution: '2K',
     audience: '',
     codebase_path: '', // Defaults to backend execution root
+    use_codebase: false, // Default to false for lightweight/failsafe generations out-of-the-box
   });
 
   useEffect(() => {
@@ -44,7 +45,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleConfigChange = (key: string, value: string) => {
+  const handleConfigChange = (key: string, value: any) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -71,7 +72,7 @@ const App: React.FC = () => {
           aspect_ratio: config.aspect_ratio,
           resolution: config.resolution,
           audience: config.audience || null,
-          codebase_path: config.codebase_path || null
+          codebase_path: (config.use_codebase && config.codebase_path) ? config.codebase_path : null
         })
       });
 

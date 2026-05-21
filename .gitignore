@@ -9,4 +9,5 @@ web/backend/output/
 node_modules/
 package-lock.json
 uv.lock
-
+docs/superpowers
+.env

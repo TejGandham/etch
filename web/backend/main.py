@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import asyncio
 import uuid
 import base64
@@ -110,16 +111,24 @@ def execute_generation_task(job_id: str, req: DiagramRequest):
     try:
         jobs_cache[job_id]["status"] = "generating"
         
+        # standard technical drawing directive
+        drawing_prefix = "Generate a clear, high-quality, professional technical system architecture diagram of the following:"
+        
         # Inject codebase context if supplied
-        full_description = req.description
         if req.codebase_path:
             folder = Path(req.codebase_path)
             if folder.exists():
                 tree_text = build_file_tree(folder, max_depth=2)
                 full_description = (
+                    f"Generate a clear, high-quality, professional technical system architecture diagram of the following codebase structure and user requirements:\n\n"
                     f"[Local Codebase Structure]\n{tree_text}\n\n"
-                    f"[User Description]\n{req.description}"
+                    f"[User Description]\n{req.description}\n\n"
+                    f"Instruction: Render the architecture and file layout of this codebase as a clean, labeled technical diagram illustrating '{req.description}'."
                 )
+            else:
+                full_description = f"{drawing_prefix} {req.description}"
+        else:
+            full_description = f"{drawing_prefix} {req.description}"
         
         api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key or api_key == "mock":
@@ -203,7 +212,7 @@ async def stream_job_status(job_id: str):
                     "imageUrl": job.get("imageUrl"),
                     "error": job.get("error")
                 }
-                yield {"event": "status", "data": payload}
+                yield {"event": "status", "data": json.dumps(payload)}
                 
             if current_status in ("complete", "failed"):
                 break

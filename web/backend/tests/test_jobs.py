@@ -1,5 +1,10 @@
+import os
 import pytest
 import time
+
+# Set mock environment before importing backend app to prevent hitting live Gemini API in tests
+os.environ["GOOGLE_API_KEY"] = "mock"
+
 from fastapi.testclient import TestClient
 from web.backend.main import app
 

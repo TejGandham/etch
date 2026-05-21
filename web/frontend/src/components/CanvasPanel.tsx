@@ -18,8 +18,9 @@ interface CanvasPanelProps {
     resolution: string;
     audience: string;
     codebase_path: string;
+    use_codebase: boolean;
   };
-  onChangeConfig: (key: string, value: string) => void;
+  onChangeConfig: (key: string, value: any) => void;
   onSelectDiagram: (item: DiagramItem) => void;
 }
 
@@ -111,7 +112,20 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
           />
         </div>
 
-        <div className="settings-group">
+        <div className="settings-group" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <input
+            type="checkbox"
+            id="use-codebase-chk"
+            checked={config.use_codebase}
+            onChange={(e) => onChangeConfig('use_codebase', e.target.checked)}
+            style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: 'var(--accent-teal)' }}
+          />
+          <label htmlFor="use-codebase-chk" style={{ cursor: 'pointer', margin: 0, userSelect: 'none', color: 'var(--text-primary)' }}>
+            Include local codebase context (file tree)
+          </label>
+        </div>
+
+        <div className="settings-group" style={{ opacity: config.use_codebase ? 1 : 0.4, transition: 'opacity 0.2s' }}>
           <label>Active Codebase Absolute Path</label>
           <input
             type="text"
@@ -119,6 +133,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             value={config.codebase_path}
             onChange={(e) => onChangeConfig('codebase_path', e.target.value)}
             placeholder="/Users/username/project"
+            disabled={!config.use_codebase}
           />
         </div>
       </div>
