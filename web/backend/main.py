@@ -6,6 +6,10 @@ import base64
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load local environment variables from workspace root
+load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
