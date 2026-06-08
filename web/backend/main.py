@@ -106,6 +106,7 @@ class DiagramRequest(BaseModel):
     resolution: str = "2K"
     audience: Optional[str] = None
     codebase_path: Optional[str] = None
+    model: str = etch.DEFAULT_MODEL
 
 def execute_generation_task(job_id: str, req: DiagramRequest):
     try:
@@ -130,15 +131,24 @@ def execute_generation_task(job_id: str, req: DiagramRequest):
         else:
             full_description = f"{drawing_prefix} {req.description}"
         
-        api_key = os.environ.get("GOOGLE_API_KEY")
+        # Resolve the selected provider and reject unsupported size combos up front.
+        try:
+            provider = etch.resolve_provider(req.model)
+            etch.validate_capabilities(provider, req.aspect_ratio, req.resolution)
+        except ValueError as e:
+            jobs_cache[job_id]["status"] = "failed"
+            jobs_cache[job_id]["error"] = str(e)
+            return
+
+        api_key = os.environ.get(provider.key_env_var)
         if not api_key or api_key == "mock":
-            # Fallback mock mode
+            # Fallback mock mode (dev: no key configured for the selected provider)
             import time
             time.sleep(1)
             file_path = OUTPUT_DIR / f"diagram_{datetime.now():%Y%m%d_%H%M%S}_{job_id[:8]}.png"
             DUMMY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
             file_path.write_bytes(base64.b64decode(DUMMY_PNG_B64))
-            
+
             with etch._jobs_lock:
                 etch._jobs[job_id] = {
                     "status": "complete",
@@ -152,9 +162,10 @@ def execute_generation_task(job_id: str, req: DiagramRequest):
         with etch._jobs_lock:
             etch._jobs[job_id] = {"status": "queued", "created": datetime.now()}
 
-        # Run generator
+        # Run generator through the selected provider
         etch._run_generation(
             job_id=job_id,
+            provider=provider,
             api_key=api_key,
             description=full_description,
             audience=req.audience,
@@ -186,6 +197,7 @@ async def start_job(req: DiagramRequest, background_tasks: BackgroundTasks):
         "aspect_ratio": req.aspect_ratio,
         "resolution": req.resolution,
         "audience": req.audience,
+        "model": req.model,
         "imageUrl": None,
         "error": None
     }
@@ -232,6 +244,7 @@ async def get_history():
                 "audience": job["audience"],
                 "aspect_ratio": job["aspect_ratio"],
                 "resolution": job["resolution"],
+                "model": job.get("model"),
                 "imageUrl": job["imageUrl"],
                 "created_at": job["created_at"]
             })

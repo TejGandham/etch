@@ -5,18 +5,209 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol
 
+import httpx
 from google import genai
 from google.genai import types
 from mcp.server.fastmcp import FastMCP
 
-MODEL = "gemini-3-pro-image-preview"
+DEFAULT_MODEL = "gemini-3-pro-image-preview"
 ALLOWED_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "21:9"}
 ALLOWED_RESOLUTIONS = {"1K", "2K"}
 MAX_JOBS = 10
 JOB_TTL = timedelta(minutes=10)
 MAX_AUDIENCE_LEN = 4000
+
+
+# --- Provider seam ---------------------------------------------------------
+# One abstraction over image backends. Adapters take a prompt plus etch's
+# semantic (aspect_ratio, resolution) and return PNG bytes. The key is injected
+# per call (never read from env inside an adapter) so resolution stays fail-fast
+# at the tool layer and the adapters stay testable.
+
+
+class GenerationError(RuntimeError):
+    """A sanitized, provider-agnostic generation failure.
+
+    Adapters wrap provider-native exceptions (httpx errors, SDK errors) in this
+    type so the message stored in job state never leaks URLs, keys, or raw HTML.
+    Subclasses RuntimeError to stay compatible with the existing error contract.
+    Messages tagged ``NO_IMAGE:`` mark the "model returned no image" case.
+    """
+
+
+class ImageProvider(Protocol):
+    """The seam every image backend implements. ``generate`` returns PNG bytes."""
+
+    model_id: str
+    key_env_var: str
+
+    def supports(self, aspect_ratio: str, resolution: str) -> bool: ...
+    def describe_support(self) -> str: ...
+    def generate(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes: ...
+
+
+class GeminiProvider:
+    """Google Gemini (default). Takes aspect_ratio and resolution natively."""
+
+    model_id = DEFAULT_MODEL
+    key_env_var = "GOOGLE_API_KEY"
+
+    def supports(self, aspect_ratio: str, resolution: str) -> bool:
+        return aspect_ratio in ALLOWED_ASPECT_RATIOS and resolution in ALLOWED_RESOLUTIONS
+
+    def describe_support(self) -> str:
+        return (
+            f"aspect_ratio ∈ {sorted(ALLOWED_ASPECT_RATIOS)}, "
+            f"resolution ∈ {sorted(ALLOWED_RESOLUTIONS)}"
+        )
+
+    def generate(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes:
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=self.model_id,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                config=types.GenerateContentConfig(
+                    max_output_tokens=32768,
+                    response_modalities=["IMAGE"],
+                    image_config=types.ImageConfig(
+                        aspect_ratio=aspect_ratio, image_size=resolution
+                    ),
+                ),
+            )
+        except Exception as e:
+            raise GenerationError(f"Gemini request failed: {type(e).__name__}") from e
+
+        if not response.candidates:
+            feedback = getattr(response, "prompt_feedback", None)
+            raise GenerationError(
+                f"NO_IMAGE: Gemini returned no candidates (prompt_feedback={feedback})"
+            )
+        candidate = response.candidates[0]
+        if not candidate.content or not candidate.content.parts:
+            reason = getattr(candidate, "finish_reason", None)
+            raise GenerationError(f"NO_IMAGE: Gemini returned empty content (finish_reason={reason})")
+        for part in candidate.content.parts:
+            inline = getattr(part, "inline_data", None)
+            if inline and inline.data:
+                data = inline.data
+                return base64.b64decode(data) if isinstance(data, str) else data
+        raise GenerationError("NO_IMAGE: Gemini response had no inline image data")
+
+
+class MAIProvider:
+    """Microsoft MAI-Image-2.5 via the Foundry REST image-generations endpoint.
+
+    Hard limits: width, height >= 768 and width * height <= 1,048,576. As a
+    result MAI cannot honor etch's "2K" (~4x over the pixel cap) or 21:9
+    (min-768 on both edges forces > 1.37 MP), so those combinations are absent
+    from ``_SIZE_MAP`` and are rejected up front.
+
+    ``_SIZE_MAP`` is the single source of truth: ``supports`` is membership in
+    it and ``generate`` reads the same table, so capability and behavior cannot
+    drift apart.
+
+    OpenRouter is a lower-friction transport (no Azure provisioning): point
+    ``MAI_ENDPOINT`` at the gateway, switch the header to
+    ``Authorization: Bearer`` and the body to OpenAI's ``size`` form — a
+    localized change to ``generate`` only; the seam is unaffected.
+    """
+
+    model_id = "mai-image-2.5"
+
+    # (aspect_ratio, resolution) -> (width, height); dims are multiples of 8 and
+    # each satisfies width,height >= 768 and width * height <= 1,048,576.
+    _SIZE_MAP: dict[tuple[str, str], tuple[int, int]] = {
+        ("1:1", "1K"): (1024, 1024),
+        ("16:9", "1K"): (1360, 768),
+        ("9:16", "1K"): (768, 1360),
+        ("4:3", "1K"): (1024, 768),
+        ("3:4", "1K"): (768, 1024),
+    }
+
+    def __init__(
+        self,
+        endpoint: Optional[str] = None,
+        deployment: Optional[str] = None,
+        key_env_var: str = "MAI_API_KEY",
+    ) -> None:
+        # Read transport config once with os.environ.get (never raises at import).
+        self._endpoint = endpoint if endpoint is not None else os.environ.get("MAI_ENDPOINT")
+        self._deployment = deployment or os.environ.get("MAI_DEPLOYMENT", "MAI-Image-2.5")
+        self.key_env_var = key_env_var
+
+    def supports(self, aspect_ratio: str, resolution: str) -> bool:
+        return (aspect_ratio, resolution) in self._SIZE_MAP
+
+    def describe_support(self) -> str:
+        return f"{sorted(self._SIZE_MAP)} (1K only — no 21:9, no 2K)"
+
+    def generate(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes:
+        try:
+            width, height = self._SIZE_MAP[(aspect_ratio, resolution)]
+        except KeyError:
+            raise GenerationError(
+                f"mai-image-2.5 does not support aspect_ratio={aspect_ratio!r}, "
+                f"resolution={resolution!r}"
+            )
+        if not self._endpoint:
+            raise GenerationError("MAI_ENDPOINT is not configured")
+
+        url = f"{self._endpoint.rstrip('/')}/mai/v1/images/generations"
+        payload = {"model": self._deployment, "prompt": prompt, "width": width, "height": height}
+        try:
+            resp = httpx.post(
+                url,
+                headers={"api-key": api_key, "Content-Type": "application/json"},
+                json=payload,
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        except httpx.HTTPStatusError as e:
+            raise GenerationError(f"MAI request failed (HTTP {e.response.status_code})") from e
+        except httpx.HTTPError as e:
+            raise GenerationError(f"MAI request error: {type(e).__name__}") from e
+        except ValueError as e:  # JSON decode failure
+            raise GenerationError("MAI returned a non-JSON response") from e
+
+        items = body.get("data") or []
+        if not items or not items[0].get("b64_json"):
+            raise GenerationError("NO_IMAGE: MAI response had no image data")
+        return base64.b64decode(items[0]["b64_json"])
+
+
+PROVIDERS: dict[str, ImageProvider] = {
+    p.model_id: p for p in (GeminiProvider(), MAIProvider())
+}
+
+
+def resolve_provider(model: str) -> ImageProvider:
+    """Map a model id to its provider, or raise ValueError listing valid ids."""
+    provider = PROVIDERS.get(model)
+    if provider is None:
+        raise ValueError(f"unknown model {model!r}; available: {sorted(PROVIDERS)}")
+    return provider
+
+
+def validate_capabilities(provider: ImageProvider, aspect_ratio: str, resolution: str) -> None:
+    """Reject an (aspect_ratio, resolution) the provider can't honor, with a clear message."""
+    if not provider.supports(aspect_ratio, resolution):
+        raise ValueError(
+            f"{provider.model_id} does not support aspect_ratio={aspect_ratio!r}, "
+            f"resolution={resolution!r}. Supported: {provider.describe_support()}"
+        )
+
+
+def resolve_api_key(provider: ImageProvider) -> str:
+    """Read the selected provider's key from the environment (fail-fast)."""
+    api_key = os.environ.get(provider.key_env_var)
+    if not api_key:
+        raise RuntimeError(f"{provider.key_env_var} environment variable is not set")
+    return api_key
+
 
 mcp = FastMCP("etch")
 
@@ -66,6 +257,7 @@ def _cleanup_jobs() -> None:
 
 def _run_generation(
     job_id: str,
+    provider: ImageProvider,
     api_key: str,
     description: str,
     audience: Optional[str],
@@ -78,35 +270,7 @@ def _run_generation(
             _jobs[job_id]["status"] = "generating"
 
         prompt = _build_prompt(description, audience)
-
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                max_output_tokens=32768,
-                response_modalities=["IMAGE"],
-                image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size=resolution),
-            ),
-        )
-
-        if not response.candidates:
-            feedback = getattr(response, "prompt_feedback", None)
-            raise RuntimeError(f"no candidates returned (prompt_feedback={feedback})")
-        candidate = response.candidates[0]
-        if not candidate.content or not candidate.content.parts:
-            reason = getattr(candidate, "finish_reason", None)
-            raise RuntimeError(f"empty content (finish_reason={reason})")
-
-        image_bytes = None
-        for part in candidate.content.parts:
-            inline = getattr(part, "inline_data", None)
-            if inline and inline.data:
-                data = inline.data
-                image_bytes = base64.b64decode(data) if isinstance(data, str) else data
-                break
-        if not image_bytes:
-            raise RuntimeError("response had no inline image data")
+        image_bytes = provider.generate(prompt, aspect_ratio, resolution, api_key)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         file_path = output_dir / f"diagram_{datetime.now():%Y%m%d_%H%M%S}_{job_id[:8]}.png"
@@ -128,6 +292,7 @@ def start_diagram_job(
     resolution: str = "2K",
     output_dir: Optional[str] = None,
     audience: Optional[str] = None,
+    model: str = DEFAULT_MODEL,
 ) -> str:
     """Start an async diagram-generation job. Returns a job_id; poll check_job_status.
 
@@ -142,14 +307,13 @@ def start_diagram_job(
             register accordingly. Skill callers (see skills/etch/SKILL.md) are
             expected to author rich audience prose; raw human-typed audience
             strings ("for developers") also work but produce weaker steering.
+        model: Image backend. "gemini-3-pro-image-preview" (default) supports
+            every aspect_ratio at 1K/2K. "mai-image-2.5" is ~1 MP only: it
+            rejects 2K and 21:9 — use 1K with a non-ultrawide ratio.
     """
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY environment variable is not set")
-    if aspect_ratio not in ALLOWED_ASPECT_RATIOS:
-        raise ValueError(f"aspect_ratio must be one of {sorted(ALLOWED_ASPECT_RATIOS)}")
-    if resolution not in ALLOWED_RESOLUTIONS:
-        raise ValueError(f"resolution must be one of {sorted(ALLOWED_RESOLUTIONS)}")
+    provider = resolve_provider(model)
+    validate_capabilities(provider, aspect_ratio, resolution)
+    api_key = resolve_api_key(provider)
 
     # Validate audience eagerly: raises ValueError if over cap, before queuing.
     _build_prompt(description, audience)
@@ -163,7 +327,7 @@ def start_diagram_job(
 
     threading.Thread(
         target=_run_generation,
-        args=(job_id, api_key, description, audience, aspect_ratio, resolution, out_dir),
+        args=(job_id, provider, api_key, description, audience, aspect_ratio, resolution, out_dir),
         daemon=True,
     ).start()
 
