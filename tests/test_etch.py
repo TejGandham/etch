@@ -187,7 +187,7 @@ def test_mai_openrouter_builds_chat_request_and_decodes_data_url(monkeypatch):
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer sk-or-test"
     assert captured["json"]["model"] == "microsoft/mai-image-2.5"
-    assert captured["json"]["modalities"] == ["image", "text"]
+    assert captured["json"]["modalities"] == ["image"]
     assert captured["json"]["image_config"]["aspect_ratio"] == "16:9"
     assert captured["json"]["messages"][0]["content"] == "draw a box"
 
