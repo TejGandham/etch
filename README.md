@@ -72,7 +72,7 @@ etch generates through a pluggable provider seam. Gemini is the default; MAI-Ima
 | model id | provider | capabilities | env |
 |-|-|-|-|
 | `gemini-3-pro-image-preview` (default) | Google Gemini 3 Pro Image (Nano Banana Pro) | all ratios incl. 21:9; 1K & 2K | `GOOGLE_API_KEY` |
-| `mai-image-2.5` | Microsoft MAI-Image-2.5 (Azure AI Foundry) | all ratios except 21:9 (1:1, 16:9, 9:16, 4:3, 3:4); 1K only | `MAI_API_KEY`, `MAI_ENDPOINT` |
+| `mai-image-2.5` | Microsoft MAI-Image-2.5 (Azure Foundry **or** OpenRouter) | all ratios except 21:9 (1:1, 16:9, 9:16, 4:3, 3:4); 1K only | `MAI_API_KEY`+`MAI_ENDPOINT`, or `OPENROUTER_API_KEY` |
 
 MAI setup (endpoint, deployment, the OpenRouter alternative) is covered in [`install.md`](install.md).
 

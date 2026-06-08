@@ -45,7 +45,11 @@ start_diagram_job(description="...", model="mai-image-2.5")
 
 Omit `model` (or pass `gemini-3-pro-image-preview`) to use the default.
 
-MAI needs three env vars in the MCP config alongside `GOOGLE_API_KEY`:
+MAI reaches the model through one of two transports, chosen by `MAI_TRANSPORT` (default `foundry`): **Azure AI Foundry**, or **OpenRouter** (no Azure provisioning).
+
+#### Azure AI Foundry (default)
+
+Needs three env vars in the MCP config alongside `GOOGLE_API_KEY`:
 
 | Variable | Required | Notes |
 |-|-|-|
@@ -57,9 +61,7 @@ Deploying MAI-Image-2.5 in Foundry is documented by Microsoft: https://learn.mic
 
 **Capability note:** MAI supports **1K only** (no 2K) and does **not** support the `21:9` ultrawide ratio. The other ratios (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`) all work. An unsupported combo is rejected up front with a clear error before the job is queued — nothing is silently downscaled.
 
-MAI is also reachable via [OpenRouter](https://openrouter.ai/) without provisioning Azure, if you'd rather not stand up a Foundry resource.
-
-Example MCP config with both providers wired up:
+Example MCP config with the Foundry transport:
 
 ```json
 {
@@ -78,6 +80,35 @@ Example MCP config with both providers wired up:
 }
 ```
 
+#### OpenRouter (no Azure)
+
+Prefer not to stand up a Foundry resource? Route MAI through [OpenRouter](https://openrouter.ai/microsoft/mai-image-2.5) — one API key, no Azure. Set `MAI_TRANSPORT=openrouter` and supply an `OPENROUTER_API_KEY`; the Foundry vars above are not needed.
+
+| Variable | Required | Notes |
+|-|-|-|
+| `MAI_TRANSPORT` | yes | Set to `openrouter` (default is `foundry`). |
+| `OPENROUTER_API_KEY` | yes | Your OpenRouter key (`sk-or-...`). |
+| `MAI_OPENROUTER_MODEL` | no | Model slug; defaults to `microsoft/mai-image-2.5`. |
+| `OPENROUTER_URL` | no | Override the endpoint (e.g. a gateway/proxy); defaults to OpenRouter's. |
+
+```json
+{
+  "mcpServers": {
+    "etch": {
+      "command": "uvx",
+      "args": ["--from", "/path/to/etch", "etch"],
+      "env": {
+        "GOOGLE_API_KEY": "your_google_api_key_here",
+        "MAI_TRANSPORT": "openrouter",
+        "OPENROUTER_API_KEY": "sk-or-..."
+      }
+    }
+  }
+}
+```
+
+Same capability surface as Foundry (1K only, no 21:9). Under the hood etch sends an OpenRouter chat-completions request with `modalities: ["image", "text"]` and an `image_config` aspect ratio, then decodes the returned base64 image.
+
 ## Verify
 
 Ask your agent: *"etch a diagram of three boxes connected by arrows."* If etch is wired up, the agent will get back a `job_id`, then ~30–60s later a saved PNG path.
@@ -91,5 +122,6 @@ The `etch` skill at `skills/etch/SKILL.md` adds audience-aware diagram generatio
 - **Tool not visible after editing config.** Restart your agent fully — many MCP clients only read config at startup.
 - **`GOOGLE_API_KEY environment variable is not set`.** The key has to live in the `env` block of the MCP config. The MCP server inherits the agent's env, not your shell's.
 - **`MAI_API_KEY environment variable is not set` / `MAI_ENDPOINT is not configured`.** Selecting `model="mai-image-2.5"` requires both in the `env` block (`MAI_ENDPOINT` is the `https://<resource>.services.ai.azure.com` base). A missing `MAI_API_KEY` fails fast before the job is queued; a missing `MAI_ENDPOINT` surfaces as a failed job (check `check_job_status`).
+- **`OPENROUTER_API_KEY environment variable is not set`.** With `MAI_TRANSPORT=openrouter`, etch resolves the OpenRouter key instead of the Foundry vars — set `OPENROUTER_API_KEY` (`sk-or-...`) in the `env` block.
 - **`mai-image-2.5 does not support ... 2K`/`21:9`.** MAI is 1K-only and has no ultrawide ratio. Use `resolution="1K"` and a non-ultrawide aspect (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`), or switch back to the default Gemini model for 2K/`21:9`.
 - **Generation fails.** Check `check_job_status(job_id)` for the failure reason. Most failures are upstream (Gemini quota or content policy); retry with a tighter description.

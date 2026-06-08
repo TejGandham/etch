@@ -1,5 +1,7 @@
 """Tests for etch.py — prompt construction and audience validation."""
 
+import base64
+
 import pytest
 
 import etch
@@ -138,3 +140,90 @@ def test_resolve_api_key_missing_raises(monkeypatch):
 def test_generation_error_is_runtime_error():
     """The error contract stays RuntimeError-compatible across providers."""
     assert issubclass(etch.GenerationError, RuntimeError)
+
+
+# --- MAI transports (Foundry + OpenRouter), HTTP mocked ---------------------
+
+# A 1x1 PNG, base64-encoded.
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def test_mai_openrouter_transport_uses_openrouter_key():
+    p = etch.MAIProvider(transport="openrouter")
+    assert p.key_env_var == "OPENROUTER_API_KEY"
+    # Same capability surface as the Foundry transport.
+    assert p.supports("16:9", "1K")
+    assert not p.supports("21:9", "1K")
+    assert not p.supports("16:9", "2K")
+
+
+def test_mai_openrouter_builds_chat_request_and_decodes_data_url(monkeypatch):
+    captured = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured.update(url=url, headers=headers, json=json)
+        return _FakeResp(
+            {"choices": [{"message": {"images": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG_B64}"}}
+            ]}}]}
+        )
+
+    monkeypatch.setattr(etch.httpx, "post", fake_post)
+    p = etch.MAIProvider(transport="openrouter")
+    out = p.generate("draw a box", "16:9", "1K", "sk-or-test")
+
+    assert out == base64.b64decode(_PNG_B64)
+    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer sk-or-test"
+    assert captured["json"]["model"] == "microsoft/mai-image-2.5"
+    assert captured["json"]["modalities"] == ["image", "text"]
+    assert captured["json"]["image_config"]["aspect_ratio"] == "16:9"
+    assert captured["json"]["messages"][0]["content"] == "draw a box"
+
+
+def test_mai_openrouter_no_image_raises(monkeypatch):
+    monkeypatch.setattr(
+        etch.httpx, "post",
+        lambda url, headers, json, timeout: _FakeResp({"choices": [{"message": {"content": "no"}}]}),
+    )
+    p = etch.MAIProvider(transport="openrouter")
+    with pytest.raises(etch.GenerationError, match="NO_IMAGE"):
+        p.generate("x", "1:1", "1K", "sk-or-test")
+
+
+def test_mai_foundry_builds_request_and_decodes_b64json(monkeypatch):
+    captured = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured.update(url=url, headers=headers, json=json)
+        return _FakeResp({"data": [{"b64_json": _PNG_B64}]})
+
+    monkeypatch.setattr(etch.httpx, "post", fake_post)
+    p = etch.MAIProvider(
+        transport="foundry", endpoint="https://res.services.ai.azure.com", deployment="MAI-Image-2.5"
+    )
+    out = p.generate("draw a box", "16:9", "1K", "azkey")
+
+    assert out == base64.b64decode(_PNG_B64)
+    assert captured["url"] == "https://res.services.ai.azure.com/mai/v1/images/generations"
+    assert captured["headers"]["api-key"] == "azkey"
+    assert captured["json"] == {
+        "model": "MAI-Image-2.5", "prompt": "draw a box", "width": 1360, "height": 768,
+    }
+
+
+def test_mai_foundry_missing_endpoint_raises():
+    p = etch.MAIProvider(transport="foundry", endpoint="")
+    with pytest.raises(etch.GenerationError, match="MAI_ENDPOINT"):
+        p.generate("x", "1:1", "1K", "k")

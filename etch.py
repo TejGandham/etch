@@ -98,27 +98,33 @@ class GeminiProvider:
 
 
 class MAIProvider:
-    """Microsoft MAI-Image-2.5 via the Foundry REST image-generations endpoint.
+    """Microsoft MAI-Image-2.5, reachable via two transports.
 
-    Hard limits: width, height >= 768 and width * height <= 1,048,576. As a
-    result MAI cannot honor etch's "2K" (~4x over the pixel cap) or 21:9
-    (min-768 on both edges forces > 1.37 MP), so those combinations are absent
-    from ``_SIZE_MAP`` and are rejected up front.
+    Selected by the ``MAI_TRANSPORT`` env var (default ``"foundry"``):
 
-    ``_SIZE_MAP`` is the single source of truth: ``supports`` is membership in
-    it and ``generate`` reads the same table, so capability and behavior cannot
-    drift apart.
+    - ``foundry`` — Azure AI Foundry REST. POSTs ``{model, prompt, width, height}``
+      to ``{MAI_ENDPOINT}/mai/v1/images/generations`` with an ``api-key`` header;
+      reads ``data[0].b64_json``. Requires ``MAI_ENDPOINT`` and ``MAI_API_KEY``.
+    - ``openrouter`` — OpenRouter's OpenAI-style chat endpoint (no Azure
+      provisioning). POSTs a chat-completions request with
+      ``modalities: ["image", "text"]`` and ``image_config`` to
+      ``/api/v1/chat/completions`` with a ``Bearer`` token; reads the image back
+      from ``choices[0].message.images[0].image_url.url`` (a base64 data URL).
+      Requires ``OPENROUTER_API_KEY``.
 
-    OpenRouter is a lower-friction transport (no Azure provisioning): point
-    ``MAI_ENDPOINT`` at the gateway, switch the header to
-    ``Authorization: Bearer`` and the body to OpenAI's ``size`` form — a
-    localized change to ``generate`` only; the seam is unaffected.
+    Both transports share the same capability surface. MAI is ~1 MP: it cannot do
+    "2K" (~4x over the pixel cap) or 21:9 (min-768 on both edges forces > 1.37 MP).
+    ``_SIZE_MAP`` is the single source of truth for the supported
+    (aspect_ratio, resolution) set; ``supports`` is membership in it. The Foundry
+    transport reads the mapped (width, height); OpenRouter passes the aspect_ratio
+    string straight to ``image_config`` (it derives the pixel dims itself).
     """
 
     model_id = "mai-image-2.5"
 
-    # (aspect_ratio, resolution) -> (width, height); dims are multiples of 8 and
-    # each satisfies width,height >= 768 and width * height <= 1,048,576.
+    # Supported (aspect_ratio, resolution) -> Foundry (width, height); dims are
+    # multiples of 8 and each satisfies width,height >= 768 and w*h <= 1,048,576.
+    # OpenRouter accepts the same ratios (no 21:9) and derives its own dims.
     _SIZE_MAP: dict[tuple[str, str], tuple[int, int]] = {
         ("1:1", "1K"): (1024, 1024),
         ("16:9", "1K"): (1360, 768),
@@ -127,16 +133,26 @@ class MAIProvider:
         ("3:4", "1K"): (768, 1024),
     }
 
+    _OPENROUTER_DEFAULT_URL = "https://openrouter.ai/api/v1/chat/completions"
+    _OPENROUTER_DEFAULT_MODEL = "microsoft/mai-image-2.5"
+
     def __init__(
         self,
+        transport: Optional[str] = None,
         endpoint: Optional[str] = None,
         deployment: Optional[str] = None,
-        key_env_var: str = "MAI_API_KEY",
+        key_env_var: Optional[str] = None,
     ) -> None:
         # Read transport config once with os.environ.get (never raises at import).
-        self._endpoint = endpoint if endpoint is not None else os.environ.get("MAI_ENDPOINT")
-        self._deployment = deployment or os.environ.get("MAI_DEPLOYMENT", "MAI-Image-2.5")
-        self.key_env_var = key_env_var
+        self._transport = (transport or os.environ.get("MAI_TRANSPORT", "foundry")).lower()
+        if self._transport == "openrouter":
+            self.key_env_var = key_env_var or "OPENROUTER_API_KEY"
+            self._or_url = os.environ.get("OPENROUTER_URL", self._OPENROUTER_DEFAULT_URL)
+            self._or_model = os.environ.get("MAI_OPENROUTER_MODEL", self._OPENROUTER_DEFAULT_MODEL)
+        else:
+            self.key_env_var = key_env_var or "MAI_API_KEY"
+            self._endpoint = endpoint if endpoint is not None else os.environ.get("MAI_ENDPOINT")
+            self._deployment = deployment or os.environ.get("MAI_DEPLOYMENT", "MAI-Image-2.5")
 
     def supports(self, aspect_ratio: str, resolution: str) -> bool:
         return (aspect_ratio, resolution) in self._SIZE_MAP
@@ -145,6 +161,11 @@ class MAIProvider:
         return f"{sorted(self._SIZE_MAP)} (1K only — no 21:9, no 2K)"
 
     def generate(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes:
+        if self._transport == "openrouter":
+            return self._generate_openrouter(prompt, aspect_ratio, resolution, api_key)
+        return self._generate_foundry(prompt, aspect_ratio, resolution, api_key)
+
+    def _generate_foundry(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes:
         try:
             width, height = self._SIZE_MAP[(aspect_ratio, resolution)]
         except KeyError:
@@ -157,26 +178,50 @@ class MAIProvider:
 
         url = f"{self._endpoint.rstrip('/')}/mai/v1/images/generations"
         payload = {"model": self._deployment, "prompt": prompt, "width": width, "height": height}
-        try:
-            resp = httpx.post(
-                url,
-                headers={"api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-                timeout=120.0,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-        except httpx.HTTPStatusError as e:
-            raise GenerationError(f"MAI request failed (HTTP {e.response.status_code})") from e
-        except httpx.HTTPError as e:
-            raise GenerationError(f"MAI request error: {type(e).__name__}") from e
-        except ValueError as e:  # JSON decode failure
-            raise GenerationError("MAI returned a non-JSON response") from e
+        body = self._post(url, {"api-key": api_key}, payload, "MAI")
 
         items = body.get("data") or []
         if not items or not items[0].get("b64_json"):
             raise GenerationError("NO_IMAGE: MAI response had no image data")
         return base64.b64decode(items[0]["b64_json"])
+
+    def _generate_openrouter(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes:
+        payload = {
+            "model": self._or_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "modalities": ["image", "text"],
+            "image_config": {"aspect_ratio": aspect_ratio, "image_size": resolution},
+        }
+        body = self._post(self._or_url, {"Authorization": f"Bearer {api_key}"}, payload, "OpenRouter")
+
+        choices = body.get("choices") or []
+        images = (choices[0].get("message", {}).get("images") if choices else None) or []
+        url = images[0].get("image_url", {}).get("url", "") if images else ""
+        if not url:
+            raise GenerationError("NO_IMAGE: OpenRouter response had no image data")
+        b64 = url.split(",", 1)[1] if "," in url else url  # strip "data:image/png;base64," prefix
+        if not b64:
+            raise GenerationError("NO_IMAGE: OpenRouter image had no data")
+        return base64.b64decode(b64)
+
+    @staticmethod
+    def _post(url: str, auth_headers: dict, payload: dict, label: str) -> dict:
+        """POST JSON and return the parsed body, wrapping transport errors sanitized."""
+        try:
+            resp = httpx.post(
+                url,
+                headers={**auth_headers, "Content-Type": "application/json"},
+                json=payload,
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            raise GenerationError(f"{label} request failed (HTTP {e.response.status_code})") from e
+        except httpx.HTTPError as e:
+            raise GenerationError(f"{label} request error: {type(e).__name__}") from e
+        except ValueError as e:  # JSON decode failure
+            raise GenerationError(f"{label} returned a non-JSON response") from e
 
 
 PROVIDERS: dict[str, ImageProvider] = {
