@@ -86,4 +86,4 @@ The MCP itself is audience-agnostic; the skill carries the per-audience guidance
 
 ![how etch works for you](images/etch_user_journey.png)
 
-The short version is in [`how-it-works.md`](how-it-works.md): how the MCP server, the audience-aware skill, and the image provider (Gemini 3 Pro Image or MAI-Image-2.5) fit together, plus links to the full design and implementation plan.
+The short version is in [`how-it-works.md`](how-it-works.md): how the MCP server, the audience-aware skill, and the image provider (Gemini 3 Pro Image or MAI-Image-2.5) fit together.
