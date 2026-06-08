@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ChatPanel, Message } from './components/ChatPanel';
-import { CanvasPanel, DiagramItem } from './components/CanvasPanel';
+import { CanvasPanel, DiagramItem, CAPABILITIES, ModelId } from './components/CanvasPanel';
 
 const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -15,6 +15,7 @@ const App: React.FC = () => {
     audience: '',
     codebase_path: '', // Defaults to backend execution root
     use_codebase: false, // Default to false for lightweight/failsafe generations out-of-the-box
+    model: 'gemini-3-pro-image-preview', // Backend default model
   });
 
   useEffect(() => {
@@ -45,7 +46,22 @@ const App: React.FC = () => {
     }
   };
 
-  const handleConfigChange = (key: string, value: any) => {
+  const handleConfigChange = (key: string, value: string | boolean) => {
+    // Switching model may invalidate the current aspect_ratio / resolution.
+    // Auto-correct to a supported default (both '16:9' and '1K' are valid for every model).
+    if (key === 'model' && typeof value === 'string') {
+      const caps = CAPABILITIES[value as ModelId];
+      setConfig((prev) => {
+        if (!caps) return { ...prev, model: value };
+        return {
+          ...prev,
+          model: value,
+          aspect_ratio: caps.aspect_ratios.includes(prev.aspect_ratio) ? prev.aspect_ratio : '16:9',
+          resolution: caps.resolutions.includes(prev.resolution) ? prev.resolution : '1K',
+        };
+      });
+      return;
+    }
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -72,7 +88,8 @@ const App: React.FC = () => {
           aspect_ratio: config.aspect_ratio,
           resolution: config.resolution,
           audience: config.audience || null,
-          codebase_path: (config.use_codebase && config.codebase_path) ? config.codebase_path : null
+          codebase_path: (config.use_codebase && config.codebase_path) ? config.codebase_path : null,
+          model: config.model
         })
       });
 
@@ -120,6 +137,7 @@ const App: React.FC = () => {
             audience: config.audience || undefined,
             aspect_ratio: config.aspect_ratio,
             resolution: config.resolution,
+            model: config.model,
             imageUrl: payload.imageUrl,
             created_at: new Date().toISOString()
           };

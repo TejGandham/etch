@@ -6,9 +6,35 @@ export interface DiagramItem {
   audience?: string;
   aspect_ratio: string;
   resolution: string;
+  model?: string;
   imageUrl: string;
   created_at: string;
 }
+
+// Supported model identifiers. Keep in lockstep with the backend (DiagramRequest.model).
+export type ModelId = 'gemini-3-pro-image-preview' | 'mai-image-2.5';
+
+interface ModelCapability {
+  label: string;
+  aspect_ratios: string[];
+  resolutions: string[];
+}
+
+// Client-side single source of truth for per-model capabilities. Mirrors the backend
+// validation exactly so the UI prevents unsupported combos rather than relying on a
+// FAILED job response.
+export const CAPABILITIES: Record<ModelId, ModelCapability> = {
+  'gemini-3-pro-image-preview': {
+    label: 'Gemini 3 Pro',
+    aspect_ratios: ['16:9', '1:1', '9:16', '4:3', '3:4', '21:9'],
+    resolutions: ['1K', '2K'],
+  },
+  'mai-image-2.5': {
+    label: 'MAI-Image-2.5',
+    aspect_ratios: ['16:9', '1:1', '9:16', '4:3', '3:4'],
+    resolutions: ['1K'],
+  },
+};
 
 interface CanvasPanelProps {
   activeDiagram: DiagramItem | null;
@@ -19,8 +45,9 @@ interface CanvasPanelProps {
     audience: string;
     codebase_path: string;
     use_codebase: boolean;
+    model: string;
   };
-  onChangeConfig: (key: string, value: any) => void;
+  onChangeConfig: (key: string, value: string | boolean) => void;
   onSelectDiagram: (item: DiagramItem) => void;
 }
 
@@ -32,6 +59,13 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
   onSelectDiagram,
 }) => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
+  // Resolve the active model's capabilities (fall back to Gemini for any unknown id).
+  const activeModel: ModelId =
+    (config.model as ModelId) in CAPABILITIES
+      ? (config.model as ModelId)
+      : 'gemini-3-pro-image-preview';
+  const caps = CAPABILITIES[activeModel];
 
   const handleDownload = () => {
     if (!activeDiagram) return;
@@ -74,6 +108,18 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
         </div>
 
         <div className="settings-group">
+          <label>Model</label>
+          <select
+            className="settings-select"
+            value={config.model}
+            onChange={(e) => onChangeConfig('model', e.target.value)}
+          >
+            <option value="gemini-3-pro-image-preview">Gemini 3 Pro</option>
+            <option value="mai-image-2.5">MAI-Image-2.5</option>
+          </select>
+        </div>
+
+        <div className="settings-group">
           <label>Aspect Ratio</label>
           <select
             className="settings-select"
@@ -85,7 +131,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             <option value="9:16">9:16 (Vertical)</option>
             <option value="4:3">4:3 (Classic)</option>
             <option value="3:4">3:4 (Portrait)</option>
-            <option value="21:9">21:9 (Ultrawide)</option>
+            <option value="21:9" disabled={!caps.aspect_ratios.includes('21:9')}>
+              21:9 (Ultrawide){caps.aspect_ratios.includes('21:9') ? '' : ' — Gemini 3 Pro only'}
+            </option>
           </select>
         </div>
 
@@ -97,7 +145,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             onChange={(e) => onChangeConfig('resolution', e.target.value)}
           >
             <option value="1K">1K Standard</option>
-            <option value="2K">2K High-Definition</option>
+            <option value="2K" disabled={!caps.resolutions.includes('2K')}>
+              2K High-Definition{caps.resolutions.includes('2K') ? '' : ' — Gemini 3 Pro only'}
+            </option>
           </select>
         </div>
 
@@ -148,7 +198,8 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
               <button className="action-btn" title="Copy Clipboard" onClick={handleCopy}>📋</button>
             </div>
             <div style={{ position: 'absolute', bottom: '12px', left: '12px', background: 'rgba(0,0,0,0.7)', padding: '6px 12px', borderRadius: '4px', fontSize: '0.75rem', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>
-              <strong>Prompt:</strong> {activeDiagram.prompt.slice(0, 50)}... | <strong>Ratio:</strong> {activeDiagram.aspect_ratio}
+              <strong>Prompt:</strong> {activeDiagram.prompt.slice(0, 50)}... | <strong>Ratio:</strong> {activeDiagram.aspect_ratio} | <strong>Res:</strong> {activeDiagram.resolution}
+              {activeDiagram.model ? <> | <strong>Model:</strong> {CAPABILITIES[activeDiagram.model as ModelId]?.label ?? activeDiagram.model}</> : null}
             </div>
           </div>
         ) : (

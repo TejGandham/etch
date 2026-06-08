@@ -28,7 +28,7 @@ Same description in. Whichever diagram each audience needs out.
 
 Diagrams are scarce in your docs because drawing them is slow. Worse, the same system needs to look one way in a runbook, another in an exec deck, and a third in onboarding — so the cost compounds. etch generates whichever version you need, from one description, in 30–60 seconds.
 
-It runs as an MCP server, so it plugs into any MCP-aware agent. Generation runs through Google's Nano Banana Pro (Gemini 3 Pro Image).
+It runs as an MCP server, so it plugs into any MCP-aware agent. Generation runs through a pluggable image provider — Google's Nano Banana Pro (Gemini 3 Pro Image) by default, or Microsoft's MAI-Image-2.5 if you prefer.
 
 ## Who it is for
 
@@ -60,10 +60,21 @@ For the long version (uv install, alternative install paths, troubleshooting), s
 
 Generation is async to stay within MCP client tool-call timeouts:
 
-- `start_diagram_job(description, aspect_ratio="16:9", resolution="2K", output_dir=None, audience=None)` — kicks off generation, returns a `job_id` immediately. When `audience` is provided (free-form string up to 4000 chars), etch wraps your description with instructions to tailor abstraction, vocabulary, emphasis, and visual register to that audience. When `audience` is `None` or empty, the prompt is byte-identical to the no-audience case.
+- `start_diagram_job(description, aspect_ratio="16:9", resolution="2K", output_dir=None, audience=None, model="gemini-3-pro-image-preview")` — kicks off generation, returns a `job_id` immediately. When `audience` is provided (free-form string up to 4000 chars), etch wraps your description with instructions to tailor abstraction, vocabulary, emphasis, and visual register to that audience. When `audience` is `None` or empty, the prompt is byte-identical to the no-audience case. The `model` param picks the image provider (defaults to Gemini); see [Models](#models).
 - `check_job_status(job_id)` — poll every ~10s. Returns `queued (Xs)`, `generating (Xs)`, `complete (Xs) — saved to <path>`, or `failed (Xs): <reason>`.
 
-`aspect_ratio` ∈ `{1:1, 16:9, 9:16, 4:3, 3:4, 21:9}`. `resolution` ∈ `{1K, 2K}`. The PNG is written to `output_dir` (default cwd); the server and client must share a filesystem.
+`aspect_ratio` ∈ `{1:1, 16:9, 9:16, 4:3, 3:4, 21:9}`. `resolution` ∈ `{1K, 2K}`. The PNG is written to `output_dir` (default cwd); the server and client must share a filesystem. (`mai-image-2.5` is ~1 MP — 1K only, no 21:9; an unsupported combo is rejected up front, not silently downscaled.)
+
+## Models
+
+etch generates through a pluggable provider seam. Gemini is the default; MAI-Image-2.5 is an optional alternative.
+
+| model id | provider | capabilities | env |
+|-|-|-|-|
+| `gemini-3-pro-image-preview` (default) | Google Gemini 3 Pro Image (Nano Banana Pro) | all ratios incl. 21:9; 1K & 2K | `GOOGLE_API_KEY` |
+| `mai-image-2.5` | Microsoft MAI-Image-2.5 (Azure Foundry **or** OpenRouter) | all ratios except 21:9 (1:1, 16:9, 9:16, 4:3, 3:4); 1K only | `MAI_API_KEY`+`MAI_ENDPOINT`, or `OPENROUTER_API_KEY` |
+
+MAI setup (endpoint, deployment, the OpenRouter alternative) is covered in [`install.md`](install.md).
 
 ## Audience-aware mode (Claude Code)
 
@@ -75,4 +86,4 @@ The MCP itself is audience-agnostic; the skill carries the per-audience guidance
 
 ![how etch works for you](images/etch_user_journey.png)
 
-The short version is in [`how-it-works.md`](how-it-works.md): how the MCP server, the audience-aware skill, and Gemini 3 Pro Image fit together, plus links to the full design and implementation plan.
+The short version is in [`how-it-works.md`](how-it-works.md): how the MCP server, the audience-aware skill, and the image provider (Gemini 3 Pro Image or MAI-Image-2.5) fit together.
