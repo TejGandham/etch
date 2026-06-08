@@ -107,7 +107,7 @@ Prefer not to stand up a Foundry resource? Route MAI through [OpenRouter](https:
 }
 ```
 
-Same capability surface as Foundry (1K only, no 21:9). Under the hood etch sends an OpenRouter chat-completions request with `modalities: ["image", "text"]` and an `image_config` aspect ratio, then decodes the returned base64 image.
+Same capability surface as Foundry (1K only, no 21:9). Under the hood etch sends an OpenRouter chat-completions request with `modalities: ["image"]` (MAI is image-output-only) and an `image_config` aspect ratio, then decodes the returned base64 image.
 
 ## Verify
 

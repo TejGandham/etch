@@ -107,7 +107,7 @@ class MAIProvider:
       reads ``data[0].b64_json``. Requires ``MAI_ENDPOINT`` and ``MAI_API_KEY``.
     - ``openrouter`` — OpenRouter's OpenAI-style chat endpoint (no Azure
       provisioning). POSTs a chat-completions request with
-      ``modalities: ["image", "text"]`` and ``image_config`` to
+      ``modalities: ["image"]`` and ``image_config`` to
       ``/api/v1/chat/completions`` with a ``Bearer`` token; reads the image back
       from ``choices[0].message.images[0].image_url.url`` (a base64 data URL).
       Requires ``OPENROUTER_API_KEY``.
@@ -189,7 +189,7 @@ class MAIProvider:
         payload = {
             "model": self._or_model,
             "messages": [{"role": "user", "content": prompt}],
-            "modalities": ["image", "text"],
+            "modalities": ["image"],  # MAI-Image-2.5 is image-output-only (not image+text)
             "image_config": {"aspect_ratio": aspect_ratio, "image_size": resolution},
         }
         body = self._post(self._or_url, {"Authorization": f"Bearer {api_key}"}, payload, "OpenRouter")
