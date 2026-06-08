@@ -6,6 +6,7 @@ The short version: **point your agent at this repo and it'll handle the rest.**
 
 - An MCP-aware agent (Claude Desktop, Claude Code, etc.).
 - A Google AI Studio API key — get one at https://aistudio.google.com/.
+- *(optional)* To use MAI-Image-2.5, an Azure AI Foundry MAI deployment — its endpoint and key. See [Using MAI-Image-2.5](#using-mai-image-25-optional) below.
 - [uv](https://docs.astral.sh/uv/) installed (`uv` ships `uvx`). Most agents that support MCP already have uv on their PATH; if yours doesn't, install it first.
 
 ## Configure your agent
@@ -32,6 +33,51 @@ Replace `/path/to/etch` with the absolute path to your local clone. To install d
 
 `uvx` builds an isolated environment on first launch and caches it; there is no manual install step. Restart your agent to pick up the new MCP server.
 
+## Using MAI-Image-2.5 (optional)
+
+etch generates with **Google Gemini** (`gemini-3-pro-image-preview`) by default — if that's all you need, you can skip this section. **Microsoft MAI-Image-2.5** is available as an additional provider.
+
+Pick the provider per request with the `model` argument on `start_diagram_job`:
+
+```
+start_diagram_job(description="...", model="mai-image-2.5")
+```
+
+Omit `model` (or pass `gemini-3-pro-image-preview`) to use the default.
+
+MAI needs three env vars in the MCP config alongside `GOOGLE_API_KEY`:
+
+| Variable | Required | Notes |
+|-|-|-|
+| `MAI_API_KEY` | yes | Your Azure AI Foundry key. |
+| `MAI_ENDPOINT` | yes | The resource base, e.g. `https://<resource>.services.ai.azure.com`. |
+| `MAI_DEPLOYMENT` | no | Deployment name; defaults to `MAI-Image-2.5`. |
+
+Deploying MAI-Image-2.5 in Foundry is documented by Microsoft: https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-mai
+
+**Capability note:** MAI supports **1K only** (no 2K) and does **not** support the `21:9` ultrawide ratio. The other ratios (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`) all work. An unsupported combo is rejected up front with a clear error before the job is queued — nothing is silently downscaled.
+
+MAI is also reachable via [OpenRouter](https://openrouter.ai/) without provisioning Azure, if you'd rather not stand up a Foundry resource.
+
+Example MCP config with both providers wired up:
+
+```json
+{
+  "mcpServers": {
+    "etch": {
+      "command": "uvx",
+      "args": ["--from", "/path/to/etch", "etch"],
+      "env": {
+        "GOOGLE_API_KEY": "your_google_api_key_here",
+        "MAI_API_KEY": "your_mai_api_key_here",
+        "MAI_ENDPOINT": "https://<resource>.services.ai.azure.com",
+        "MAI_DEPLOYMENT": "MAI-Image-2.5"
+      }
+    }
+  }
+}
+```
+
 ## Verify
 
 Ask your agent: *"etch a diagram of three boxes connected by arrows."* If etch is wired up, the agent will get back a `job_id`, then ~30–60s later a saved PNG path.
@@ -44,4 +90,6 @@ The `etch` skill at `skills/etch/SKILL.md` adds audience-aware diagram generatio
 
 - **Tool not visible after editing config.** Restart your agent fully — many MCP clients only read config at startup.
 - **`GOOGLE_API_KEY environment variable is not set`.** The key has to live in the `env` block of the MCP config. The MCP server inherits the agent's env, not your shell's.
+- **`MAI_API_KEY environment variable is not set` / `MAI_ENDPOINT is not configured`.** Selecting `model="mai-image-2.5"` requires both in the `env` block (`MAI_ENDPOINT` is the `https://<resource>.services.ai.azure.com` base). A missing `MAI_API_KEY` fails fast before the job is queued; a missing `MAI_ENDPOINT` surfaces as a failed job (check `check_job_status`).
+- **`mai-image-2.5 does not support ... 2K`/`21:9`.** MAI is 1K-only and has no ultrawide ratio. Use `resolution="1K"` and a non-ultrawide aspect (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`), or switch back to the default Gemini model for 2K/`21:9`.
 - **Generation fails.** Check `check_job_status(job_id)` for the failure reason. Most failures are upstream (Gemini quota or content policy); retry with a tighter description.

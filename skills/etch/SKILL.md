@@ -188,10 +188,12 @@ A–F map to the six anchor prose blocks above. G triggers the on-the-fly path: 
 
 The etch MCP exposes two tools:
 
-- `start_diagram_job(description, aspect_ratio="16:9", resolution="2K", output_dir=None, audience=None)` — returns a `job_id` immediately.
+- `start_diagram_job(description, aspect_ratio="16:9", resolution="2K", output_dir=None, audience=None, model="gemini-3-pro-image-preview")` — returns a `job_id` immediately.
 - `check_job_status(job_id)` — poll every ~10s. Returns `queued (Xs)`, `generating (Xs)`, `complete (Xs) — saved to <path>`, or `failed (Xs): <reason>`.
 
 Pass the full audience prose block (verbatim from the anchor list, or your on-the-fly block) as the `audience` argument. Pass the description the user wrote — do NOT modify it. Pass the inferred (or user-specified) `aspect_ratio` and `resolution`.
+
+By default, omit `model` — etch uses Google Gemini, which supports the full canvas matrix above (every ratio, 1K and 2K). Only if the user explicitly asks for MAI-Image-2.5, pass `model="mai-image-2.5"` AND constrain the canvas to `1K` and a non-`21:9` ratio. MAI cannot produce 2K or 21:9, so those combos are rejected before the job is queued; pick the closest supported ratio (1:1, 16:9, 9:16, 4:3, or 3:4) at 1K.
 
 After dispatching the job, poll `check_job_status` every ~10 seconds. Generation typically takes 30–60s. Surface the final result line to the user: either `Generated for <audience-name>, <ratio> <res> — saved to <path>`, or the failure reason verbatim.
 
