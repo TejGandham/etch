@@ -6,7 +6,15 @@ import time
 os.environ["GOOGLE_API_KEY"] = "mock"
 
 from fastapi.testclient import TestClient
-from web.backend.main import app, execute_generation_task, DiagramRequest, jobs_cache
+from pathlib import Path
+from web.backend.main import (
+    app,
+    execute_generation_task,
+    DiagramRequest,
+    jobs_cache,
+    OUTPUT_DIR,
+    _resolve_reference_path,
+)
 import etch
 
 client = TestClient(app)
@@ -52,6 +60,17 @@ def test_full_job_flow():
 # --- reference_images wiring ------------------------------------------------
 
 
+def test_resolve_reference_path_confines_to_output_dir():
+    """Absolute paths and traversal segments are stripped to a basename inside
+    OUTPUT_DIR, so a web client cannot read arbitrary server files."""
+    out = str(OUTPUT_DIR.resolve())
+    for evil in ["/etc/passwd", "../../etc/passwd", "../../../secrets.png", "/root/.ssh/id_rsa"]:
+        safe = _resolve_reference_path(evil)
+        assert safe.startswith(out + os.sep)
+        assert Path(safe).name == Path(evil).name
+        assert ".." not in Path(safe).parts
+
+
 def test_reference_images_threaded_into_run_generation(monkeypatch):
     """req.reference_images is loaded via etch._load_reference_images and threaded
     into etch._run_generation as the reference_images= kwarg."""
@@ -78,11 +97,15 @@ def test_reference_images_threaded_into_run_generation(monkeypatch):
     jobs_cache[job_id] = {"status": "queued", "error": None}
     req = DiagramRequest(
         description="draw a box",
-        reference_images=["/tmp/ref_a.png", "/tmp/ref_b.png"],
+        reference_images=["ref_a.png", "ref_b.png"],
     )
     execute_generation_task(job_id, req)
 
-    assert captured["load_paths"] == ["/tmp/ref_a.png", "/tmp/ref_b.png"]
+    # Paths handed to the loader are confined to OUTPUT_DIR (basename only).
+    assert captured["load_paths"] == [
+        str((OUTPUT_DIR / "ref_a.png").resolve()),
+        str((OUTPUT_DIR / "ref_b.png").resolve()),
+    ]
     assert captured["reference_images"] == ["FAKE_REF_1", "FAKE_REF_2"]
     assert jobs_cache[job_id]["status"] == "complete"
 

@@ -36,6 +36,23 @@ OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(OUTPUT_DIR)), name="static")
 
+
+def _resolve_reference_path(entry: str) -> str:
+    """Confine a client-supplied reference-image path to OUTPUT_DIR.
+
+    Web clients may reference only prior job outputs, which etch writes into
+    OUTPUT_DIR. Any directory components are stripped to a basename and any
+    path that would escape OUTPUT_DIR is rejected, so an HTTP request cannot
+    read arbitrary files on the server and exfiltrate them to the image
+    provider. (The MCP tool runs locally under the operator's own trust and
+    keeps full path freedom — this guard is web-surface only.)
+    """
+    name = Path(entry).name  # strip directories and traversal segments
+    safe = (OUTPUT_DIR / name).resolve()
+    if not str(safe).startswith(str(OUTPUT_DIR.resolve()) + os.sep):
+        raise ValueError("reference_images must name a prior job output in the output directory")
+    return str(safe)
+
 # Local active jobs in-memory cache
 jobs_cache: dict[str, dict] = {}
 
@@ -163,7 +180,8 @@ def execute_generation_task(job_id: str, req: DiagramRequest):
         loaded_references = []
         if req.reference_images:
             try:
-                loaded_references = etch._load_reference_images(req.reference_images, provider)
+                safe_paths = [_resolve_reference_path(p) for p in req.reference_images]
+                loaded_references = etch._load_reference_images(safe_paths, provider)
             except ValueError as e:
                 jobs_cache[job_id]["status"] = "failed"
                 jobs_cache[job_id]["error"] = str(e)
