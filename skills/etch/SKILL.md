@@ -186,10 +186,11 @@ A–F map to the six anchor prose blocks above. G triggers the on-the-fly path: 
 
 ## Calling the MCP
 
-The etch MCP exposes two tools:
+The etch MCP exposes three tools:
 
 - `start_diagram_job(description, aspect_ratio="16:9", resolution="2K", output_dir=None, audience=None, model="gemini-3-pro-image-preview", reference_images=None)` — returns a `job_id` immediately.
-- `check_job_status(job_id)` — poll every ~10s. Returns `queued (Xs)`, `generating (Xs)`, `complete (Xs) — saved to <path>`, or `failed (Xs): <reason>`.
+- `start_variant_job(descriptions, aspect_ratio="16:9", resolution="512px", output_dir=None, audience=None, model="gemini-3.1-flash-image")` — one image per description (1–5 allowed), generated concurrently under a single `job_id`. Used by the variants flow below; the `audience` wrap applies to each description.
+- `check_job_status(job_id)` — poll every ~10s. Single-image jobs return `queued (Xs)`, `generating (Xs)`, `complete (Xs) — saved to <path>`, or `failed (Xs): <reason>`. Variant jobs return `generating (Xs elapsed, k/n complete)`, then `complete (Xs) — k/n variants saved` plus one `variant <i>: <path>` line per saved image, in input order.
 
 Pass the full audience prose block (verbatim from the anchor list, or your on-the-fly block) as the `audience` argument. Pass the description the user wrote — do NOT modify it. Pass the inferred (or user-specified) `aspect_ratio` and `resolution`.
 
@@ -197,9 +198,23 @@ Pass the full audience prose block (verbatim from the anchor list, or your on-th
 
 Gemini's image model has no reproducibility seed — resubmitting the same prompt does not reproduce the same image, it produces a different one. So when the user wants to refine, up-res, or lightly adjust a diagram they already approved, do NOT just re-run `start_diagram_job` with the same (or a tweaked) description — that regenerates from scratch and gives a different composition.
 
-Instead, feed the approved diagram's PNG path back in as `reference_images=["<path to the prior output>"]`, alongside the (possibly adjusted) description and canvas. This is Gemini-only: pass `reference_images` only when `model` is the default `gemini-3-pro-image-preview` (or omitted). If the user is on `mai-image-2.5`, tell them refinement isn't available on that model — it's text-to-image only and rejects reference images.
+Instead, feed the approved diagram's PNG path back in as `reference_images=["<path to the prior output>"]`, alongside the (possibly adjusted) description and canvas. This is Gemini-only: both `gemini-3-pro-image-preview` and `gemini-3.1-flash-image` accept up to 14 reference images. If the user is on `mai-image-2.5`, tell them refinement isn't available on that model — it's text-to-image only and rejects reference images. Keep the refinement on the SAME model that produced the approved image — the composition transfers through the image, not the prompt, and that feedback doesn't carry across models.
 
-By default, omit `model` — etch uses Google Gemini, which supports the full canvas matrix above (every ratio, 1K and 2K). Only if the user explicitly asks for MAI-Image-2.5, pass `model="mai-image-2.5"` AND constrain the canvas to `1K` and a non-`21:9` ratio. MAI cannot produce 2K or 21:9, so those combos are rejected before the job is queued; pick the closest supported ratio (1:1, 16:9, 9:16, 4:3, or 3:4) at 1K.
+### When the user wants options: variants → pick → refine
+
+When the user asks for choices ("give me a few options", "show me some takes on this"), do not fire repeated `start_diagram_job` calls. Author up to 5 DISTINCT compositions of the SAME diagram — vary the layout, grouping, and emphasis, not the content. Five different diagrams is wrong; five arrangements of one diagram is right.
+
+1. Write one description per composition. Each keeps the user's content intact and states what that take changes (e.g., "left-to-right pipeline with the queue as the focal element" vs. "hub-and-spoke centered on the API gateway").
+2. Call `start_variant_job(descriptions=[...])` with the same `audience` prose and inferred `aspect_ratio` you'd pass to `start_diagram_job`. Leave `model` and `resolution` at their defaults (Nano Banana 2 at 512px) — the point is cheap candidates.
+3. Poll `check_job_status` every ~10s. On completion the `variant <i>: <path>` lines are in input order, so path *i* is your composition *i*.
+4. Present the results and recommend one, with a one-line reason. The human confirms the pick. When running headless (no human to ask), proceed with your recommendation.
+5. Refine the pick at full resolution on the SAME model: `start_diagram_job(description, model="gemini-3.1-flash-image", resolution="2K", reference_images=["<picked path>"], audience=...)`. Do not switch models for the final — the reference image only carries the composition forward within the model that produced it, and these models are seedless, so a prompt alone cannot reproduce a composition.
+
+If some variants fail, the job still completes with the ones that saved (`k/n variants saved`); present those. Only zero successes reports `failed`.
+
+### Model constraints
+
+By default, omit `model` — etch uses Google Gemini, which supports the full canvas matrix above (every ratio, 1K and 2K; `gemini-3.1-flash-image` adds 512px). Only if the user explicitly asks for MAI-Image-2.5, pass `model="mai-image-2.5"` AND constrain the canvas to `1K` and a non-`21:9` ratio. MAI cannot produce 2K or 21:9, so those combos are rejected before the job is queued; pick the closest supported ratio (1:1, 16:9, 9:16, 4:3, or 3:4) at 1K.
 
 After dispatching the job, poll `check_job_status` every ~10 seconds. Generation typically takes 30–60s. Surface the final result line to the user: either `Generated for <audience-name>, <ratio> <res> — saved to <path>`, or the failure reason verbatim.
 
