@@ -1,0 +1,139 @@
+{
+  "slug": "etch-reference-image-conditioning",
+  "title": "Reference-image conditioning for etch diagrams",
+  "summary": "Let etch reuse an approved draft image as a visual reference for the next generation, so a diagram's composition and style carry over instead of being re-rolled from scratch. This gives etch a real draft-to-final workflow, working around the image models' lack of a reproducibility seed.",
+  "motivation": "Nano Banana / Gemini image models are autoregressive with no seed, so the only way to keep a composition across generations is to pass the prior image back in as a reference.",
+  "scope": {
+    "included": [
+      "etch.py provider seam (ImageProvider.generate) and provider capability model",
+      "etch.py GeminiProvider request construction (image Parts) and MAIProvider capability rejection",
+      "etch.py tool boundary: reference-image load/validate/encode + start_diagram_job + _run_generation threading",
+      "web/backend/main.py DiagramRequest + execute_generation_task threading",
+      "Docs: README.md, how-it-works.md, .env.example, skills/etch/SKILL.md"
+    ],
+    "excluded": [
+      "Web frontend UI to pick, upload, or preview a reference image (web/frontend/**)",
+      "Browser file-upload / data-URL transport — the web API accepts server-accessible file paths in V1, mirroring the MCP tool",
+      "Reference conditioning on MAI-Image-2.5 — declared unsupported in V1 (its Foundry endpoint is text-to-image only; OpenRouter image-edit behavior for MAI is unverified)",
+      "Any change to the no-reference code path's output or request shape (must stay byte-identical)"
+    ]
+  },
+  "design_facts": {
+    "source": null,
+    "stack": "Python MCP server (FastMCP) + FastAPI web backend; google-genai SDK for Gemini, httpx for MAI-Image-2.5; pytest, run via uv"
+  },
+  "sme": ["minimalism", "python-fastapi"],
+  "env_contract": {
+    "command": "uv run pytest",
+    "supports_isolation": true
+  },
+  "runtime_contract": {
+    "runtimes": [
+      { "name": "python", "version": ">=3.11" }
+    ],
+    "on_unavailable": "halt"
+  },
+  "work_items": [
+    {
+      "id": "ref-core",
+      "title": "Accept reference images in the provider layer",
+      "summary": "Teach the image-provider seam to take optional reference images, wire them into the Gemini request, and read/validate/encode them from disk at the tool boundary — with the no-reference path left byte-for-byte unchanged.",
+      "estimate": "M",
+      "depends_on": [],
+      "contract": {
+        "exposes": "ImageProvider.generate(prompt, aspect_ratio, resolution, api_key, reference_images=()) -> bytes, where reference_images is a sequence of neutral (image_bytes: bytes, mime_type: str) pairs; an empty sequence produces a request byte-identical to today's text-only path. Providers declare capability via max_reference_images (GeminiProvider = 14, MAIProvider = 0). GeminiProvider.generate appends image Parts (types.Part.from_bytes(data, mime_type)) to the single user Content when references are present, and builds contents identical to today when empty. MAIProvider.generate raises GenerationError when any reference image is supplied and is unchanged when none. A tool-boundary helper _load_reference_images(paths, provider) -> list[(bytes, mime)] reads each path and raises ValueError on a missing/unreadable file, an unsupported format (allowed: PNG/JPEG/WebP/HEIC), a count exceeding provider.max_reference_images, a provider whose max is 0, or a file over the per-file byte cap.",
+        "consumes": null
+      },
+      "touches": ["etch.py", "tests/test_etch.py"],
+      "surface": {
+        "flagged": true,
+        "signals": [
+          "contract-mutation: changes the ImageProvider.generate() seam signature (additive — new arg defaults to empty)",
+          "capability-escalation: new disk file IO and image decode at the tool boundary",
+          "blast-radius: etch.py is edited by two work items (ref-core and mcp-tool)"
+        ]
+      },
+      "oracle": {
+        "type": "unit",
+        "command": "uv run pytest -q tests/test_etch.py",
+        "assertions": [
+          "With reference_images empty, GeminiProvider builds the request contents byte-identical to the current text-only baseline (existing no-reference tests still pass).",
+          "With N reference images, GeminiProvider's request contents include N image parts alongside the text part (captured via a mocked genai client).",
+          "MAIProvider.generate raises when any reference image is supplied, and is unchanged (existing MAI transport tests pass) when none is.",
+          "_load_reference_images raises a clear ValueError for each of: missing file, unsupported format, count over the provider max, a provider with max 0 (MAI), and an oversized file."
+        ]
+      }
+    },
+    {
+      "id": "mcp-tool",
+      "title": "Add a reference-image option to the diagram tool",
+      "summary": "Give start_diagram_job an optional list of reference-image paths and pass them through the job runner to the provider, validating them up front so bad input fails before a job is queued.",
+      "estimate": "S",
+      "depends_on": ["ref-core"],
+      "contract": {
+        "consumes": "ref-core's _load_reference_images(paths, provider) and the generate(..., reference_images=...) seam.",
+        "exposes": "start_diagram_job(..., reference_images: Optional[list[str]] = None) — an optional list of image file paths on disk (typically a prior job's output PNG). When None or empty the call is byte-identical to today: _run_generation and provider.generate receive empty references. When provided, the paths are validated and encoded via _load_reference_images at the tool layer (fail-fast, before the job is queued, consistent with existing capability/audience validation), then threaded through _run_generation(..., reference_images=...) into provider.generate. _run_generation gains a reference_images parameter passed straight to provider.generate. The tool docstring documents the parameter, the draft-to-final workflow, and that MAI rejects references."
+      },
+      "touches": ["etch.py", "tests/test_etch.py"],
+      "surface": {
+        "flagged": true,
+        "signals": [
+          "contract-mutation: adds a public MCP tool argument (reference_images) to start_diagram_job (additive — optional, defaults to None)",
+          "blast-radius: etch.py is edited by two work items (ref-core and mcp-tool)"
+        ]
+      },
+      "oracle": {
+        "type": "unit",
+        "command": "uv run pytest -q tests/test_etch.py",
+        "assertions": [
+          "A default call (reference_images=None) invokes provider.generate with empty references — the call shape is byte-identical to today (verified with a mocked provider capturing args).",
+          "Passing file paths threads the decoded references through _run_generation into provider.generate (count and content match the inputs).",
+          "Supplying references for a provider that does not support them (MAI) raises ValueError before the job is queued — no worker thread is started and no job_id is returned."
+        ]
+      }
+    },
+    {
+      "id": "web-backend",
+      "title": "Thread reference images through the web API",
+      "summary": "Add an optional reference-image field to the web backend's job request and pass it into the shared generator, leaving the existing no-reference and mock-mode behavior unchanged.",
+      "estimate": "S",
+      "depends_on": ["mcp-tool"],
+      "contract": {
+        "consumes": "etch._run_generation(..., reference_images=...) from mcp-tool and the provider seam from ref-core.",
+        "exposes": "DiagramRequest.reference_images: Optional[list[str]] = None — an additive optional field on the POST /api/jobs body carrying server-accessible image file paths. execute_generation_task threads it into etch._run_generation(..., reference_images=...). When the field is absent, behavior is byte-identical to today, including the mock-mode fallback used when the selected provider has no key. Browser upload transport and any frontend UI are out of scope."
+      },
+      "touches": ["web/backend/main.py", "web/backend/tests/test_jobs.py"],
+      "surface": {
+        "flagged": true,
+        "signals": [
+          "contract-mutation: adds a field to the POST /api/jobs request body schema (DiagramRequest) (additive — optional, defaults to None)"
+        ]
+      },
+      "oracle": {
+        "type": "integration",
+        "command": "uv run pytest -q web/backend/tests/",
+        "assertions": [
+          "POST /api/jobs with reference_images threads the paths into etch._run_generation (patched to capture the argument).",
+          "A request without the field behaves exactly as today, and the mock-mode path (no key configured) is unaffected."
+        ]
+      }
+    },
+    {
+      "id": "docs",
+      "title": "Document the draft-to-final workflow",
+      "summary": "Update the README, how-it-works, env example, and skill so users know how reference conditioning works, which providers support it, and why it exists.",
+      "estimate": "S",
+      "depends_on": ["mcp-tool", "web-backend"],
+      "contract": "Update README.md (start_diagram_job signature with reference_images; a Models-table note that Gemini supports up to 14 references and MAI supports none; a new 'Iterative refinement (draft to final)' section explaining that these models have no reproducibility seed and that passing an approved draft back as a reference is how composition/style is preserved), how-it-works.md (mention reference conditioning in the provider-abstraction description), .env.example (note that reference conditioning needs no new env var), and skills/etch/SKILL.md (guidance on when to feed a prior diagram back as a reference). Prose must match the behavior shipped by ref-core, mcp-tool, and web-backend.",
+      "touches": ["README.md", "how-it-works.md", ".env.example", "skills/etch/SKILL.md"],
+      "surface": {
+        "flagged": false,
+        "signals": []
+      },
+      "oracle": {
+        "opt_out": true,
+        "reason": "Docs-only prose change; the repo configures no docs linter, link-checker, or CI doc gate (indeed no lint/typecheck tooling at all), so there is no CI-facing check to run. Accuracy is verified by review against the code shipped in the preceding items."
+      }
+    }
+  ]
+}
