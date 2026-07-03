@@ -38,7 +38,16 @@ It runs as an MCP server, so it plugs into any MCP-aware agent. Generation runs 
 
 ## Quick start
 
-Add etch to your MCP client config (Claude Desktop's `claude_desktop_config.json`, or equivalent):
+**Claude Code**: install the plugin — it registers the MCP server and the audience-aware skill in one step:
+
+```bash
+/plugin marketplace add https://github.com/TejGandham/etch.git
+/plugin install etch@etch
+```
+
+**Codex CLI**: install the skill from the same repo marketplace and add one `[mcp_servers.etch]` entry to `config.toml` — see [docs/how-to/codex.md](docs/how-to/codex.md).
+
+**Any other MCP client**: add etch to your MCP config (Claude Desktop's `claude_desktop_config.json`, or equivalent):
 
 ```json
 {
@@ -105,9 +114,9 @@ Since every run is a fresh roll, you can't shop for a good composition by re-run
 
 Variants and the final render must use the **same model**. The refine step carries the composition forward through the picked image, and that image feedback only transfers within one model — these models are seedless, so a prompt alone can't reproduce a composition. Switching models between the variants and the final means starting over.
 
-## Audience-aware mode (Claude Code)
+## Audience-aware mode (Claude Code & Codex)
 
-If you use Claude Code, the bundled skill at `skills/etch/SKILL.md` picks the audience from context — when you ask for a "diagram of the auth service for the runbook" or "an exec slide of the system", it infers the audience and shapes the prompt for you. Without the skill, pass `audience` to `start_diagram_job` directly.
+The bundled skill at `skills/etch/SKILL.md` picks the audience from context — when you ask for a "diagram of the auth service for the runbook" or "an exec slide of the system", it infers the audience and shapes the prompt for you. It installs with the plugin on both Claude Code and Codex CLI ([docs/how-to/](docs/how-to/)); on Codex a repo checkout also auto-discovers it from the committed `.agents/skills/` mirror. Without the skill, pass `audience` to `start_diagram_job` directly.
 
 The MCP itself is audience-agnostic; the skill carries the per-audience guidance, so different clients (or future skills) can call the MCP without buying into this audience model.
 

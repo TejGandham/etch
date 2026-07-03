@@ -1,0 +1,20 @@
+{
+  "name": "etch-local",
+  "interface": {
+    "displayName": "etch local"
+  },
+  "plugins": [
+    {
+      "name": "etch",
+      "source": {
+        "source": "local",
+        "path": "./plugins/etch"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

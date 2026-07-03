@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "etch",
+  "description": "Audience-aware architecture and codebase diagrams as an MCP server plus a skill. etch generates technical diagrams with image models — Google Gemini Nano Banana Pro (default), the fast Nano Banana 2 with a cheap 512px tier, and Microsoft MAI-Image-2.5 — through async MCP jobs (start_diagram_job, start_variant_job, check_job_status), with reference-image conditioning to refine a draft into a final and a variants -> pick -> refine workflow. The bundled etch skill infers the target audience (architect, developer, PM, end user, executive, ops/SRE), picks the canvas, and steers the model with curated audience prose.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Tej Gandham",
+    "email": "tej@engen.tech"
+  },
+  "homepage": "https://github.com/TejGandham/etch",
+  "repository": "https://github.com/TejGandham/etch",
+  "license": "UNLICENSED",
+  "keywords": [
+    "diagrams",
+    "architecture",
+    "mcp",
+    "image-generation",
+    "gemini",
+    "nano-banana",
+    "audience",
+    "skills"
+  ],
+  "mcpServers": {
+    "etch": {
+      "command": "uvx",
+      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "etch"]
+    }
+  }
+}

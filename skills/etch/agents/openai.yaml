@@ -1,0 +1,5 @@
+interface:
+  display_name: "etch"
+  short_description: "Generate an architecture or codebase diagram tailored to a specific audience (architect, developer, PM, end user, exec, ops/SRE)."
+policy:
+  allow_implicit_invocation: true

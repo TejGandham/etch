@@ -1,0 +1,40 @@
+{
+  "name": "etch",
+  "version": "0.2.0",
+  "description": "Audience-aware architecture and codebase diagrams as an MCP server plus a skill. etch generates technical diagrams with image models — Google Gemini Nano Banana Pro (default), the fast Nano Banana 2 with a cheap 512px tier, and Microsoft MAI-Image-2.5 — through async MCP jobs (start_diagram_job, start_variant_job, check_job_status), with reference-image conditioning to refine a draft into a final and a variants -> pick -> refine workflow. The bundled etch skill infers the target audience (architect, developer, PM, end user, executive, ops/SRE), picks the canvas, and steers the model with curated audience prose.",
+  "author": {
+    "name": "Tej Gandham",
+    "email": "tej@engen.tech"
+  },
+  "homepage": "https://github.com/TejGandham/etch",
+  "repository": "https://github.com/TejGandham/etch",
+  "license": "UNLICENSED",
+  "keywords": [
+    "diagrams",
+    "architecture",
+    "mcp",
+    "image-generation",
+    "gemini",
+    "nano-banana",
+    "audience",
+    "skills"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "etch",
+    "shortDescription": "Generate architecture diagrams tailored to a specific audience.",
+    "longDescription": "etch packages one skill and one MCP server. The skill reads a diagram request, infers who the diagram is for (architect, developer, product manager, end user, executive, or ops/SRE), picks the canvas shape and resolution, and calls the etch MCP server with curated audience prose that steers the image model's abstraction, vocabulary, and visual register. The server runs async generation jobs on Google Gemini Nano Banana Pro (default), Nano Banana 2 (fast, with a cheap 512px tier for variants), or Microsoft MAI-Image-2.5, supports reference-image conditioning to refine a draft into a final, and a variants -> pick -> refine workflow. The MCP server itself is registered separately in Codex's config.toml — see the repo's docs/how-to/codex.md.",
+    "developerName": "Tej Gandham",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/TejGandham/etch",
+    "defaultPrompt": [
+      "etch a diagram of this system for the architects.",
+      "Make an exec slide of our pipeline.",
+      "Runbook diagram of the auth service for on-call."
+    ]
+  }
+}

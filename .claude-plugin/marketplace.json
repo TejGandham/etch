@@ -1,0 +1,23 @@
+{
+  "name": "etch",
+  "description": "etch — audience-aware architecture diagrams: an MCP server over Gemini and MAI image models plus a skill that tailors each diagram to its reader.",
+  "owner": {
+    "name": "Tej Gandham",
+    "email": "tej@engen.tech"
+  },
+  "metadata": {
+    "description": "One plugin: the etch MCP server (async diagram jobs, variants -> pick -> refine, reference-image conditioning) and the etch skill (audience inference, canvas inference, curated audience prose for six reader anchors).",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "etch",
+      "description": "Audience-aware architecture and codebase diagrams. Installing this plugin registers the etch MCP server (start_diagram_job, start_variant_job, check_job_status — Gemini Nano Banana Pro/2 and MAI-Image-2.5 backends, launched via uvx from the plugin itself) and the etch skill, which infers the target audience and canvas and steers the image model with curated audience prose. Requires uv on PATH and GOOGLE_API_KEY in the environment.",
+      "source": "./",
+      "strict": true,
+      "skills": [
+        "./skills/etch"
+      ]
+    }
+  ]
+}

@@ -2,6 +2,15 @@
 
 The short version: **point your agent at this repo and it'll handle the rest.**
 
+## Claude Code or Codex CLI? Install the plugin instead
+
+If your agent is Claude Code or Codex CLI, skip the manual MCP config below — etch ships as a plugin for both, and the plugin carries the skill:
+
+- **Claude Code**: `/plugin marketplace add https://github.com/TejGandham/etch.git` then `/plugin install etch@etch`. The MCP server registers automatically. See [docs/how-to/claude-code.md](docs/how-to/claude-code.md).
+- **Codex CLI**: install the skill from the repo marketplace and add one `[mcp_servers.etch]` entry to `config.toml`. See [docs/how-to/codex.md](docs/how-to/codex.md).
+
+Everything below is for other MCP clients (Claude Desktop, etc.) or for wiring the server by hand.
+
 ## Prerequisites
 
 - An MCP-aware agent (Claude Desktop, Claude Code, etc.).
