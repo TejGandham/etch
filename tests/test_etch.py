@@ -387,3 +387,150 @@ def test_load_reference_images_valid_png_returns_bytes_and_mime(tmp_path):
     f.write_bytes(png_bytes)
     result = etch._load_reference_images([str(f)], g)
     assert result == [etch.ReferenceImage(png_bytes, "image/png")]
+
+
+# --- MCP tool layer: reference_images wiring ---------------------------------
+
+
+class _FakeProvider:
+    """A minimal ImageProvider stand-in that records generate() calls."""
+
+    model_id = "fake-model"
+    key_env_var = "FAKE_API_KEY"
+    max_reference_images = 14
+
+    def __init__(self):
+        self.calls = []
+
+    def supports(self, aspect_ratio, resolution):
+        return True
+
+    def describe_support(self):
+        return "fake"
+
+    def generate(self, prompt, aspect_ratio, resolution, api_key, reference_images=()):
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "resolution": resolution,
+                "api_key": api_key,
+                "reference_images": list(reference_images),
+            }
+        )
+        return base64.b64decode(_PNG_B64)
+
+
+def test_run_generation_default_calls_provider_with_empty_references(tmp_path):
+    """Hard constraint: reference_images omitted -> provider.generate sees an empty sequence."""
+    provider = _FakeProvider()
+    etch._jobs["job-default"] = {"status": "queued", "created": etch.datetime.now()}
+    etch._run_generation(
+        "job-default", provider, "k", "draw a box", None, "16:9", "2K", tmp_path
+    )
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["reference_images"] == []
+    assert etch._jobs["job-default"]["status"] == "complete"
+
+
+def test_run_generation_threads_references_through_to_provider(tmp_path):
+    provider = _FakeProvider()
+    refs = [
+        etch.ReferenceImage(b"fake-bytes-1", "image/png"),
+        etch.ReferenceImage(b"fake-bytes-2", "image/jpeg"),
+    ]
+    etch._jobs["job-refs"] = {"status": "queued", "created": etch.datetime.now()}
+    etch._run_generation(
+        "job-refs", provider, "k", "draw a box", None, "16:9", "2K", tmp_path,
+        reference_images=refs,
+    )
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["reference_images"] == refs
+    assert etch._jobs["job-refs"]["status"] == "complete"
+
+
+def test_start_diagram_job_default_reference_images_is_byte_identical(monkeypatch, tmp_path):
+    """Hard constraint: reference_images=None threads an empty sequence into _run_generation."""
+    captured = {}
+
+    def fake_run_generation(job_id, provider, api_key, description, audience,
+                             aspect_ratio, resolution, output_dir, reference_images=()):
+        captured["reference_images"] = list(reference_images)
+        with etch._jobs_lock:
+            etch._jobs[job_id]["status"] = "complete"
+            etch._jobs[job_id]["file_path"] = "unused"
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "gk")
+    monkeypatch.setattr(etch, "_run_generation", fake_run_generation)
+    monkeypatch.setattr(etch.threading, "Thread", _SyncThread)
+
+    job_id = etch.start_diagram_job("draw a box", output_dir=str(tmp_path))
+    assert job_id in etch._jobs
+    assert captured["reference_images"] == []
+
+
+def test_start_diagram_job_threads_reference_image_paths(monkeypatch, tmp_path):
+    """Passing file paths threads decoded ReferenceImages through to _run_generation."""
+    captured = {}
+
+    def fake_run_generation(job_id, provider, api_key, description, audience,
+                             aspect_ratio, resolution, output_dir, reference_images=()):
+        captured["reference_images"] = list(reference_images)
+        with etch._jobs_lock:
+            etch._jobs[job_id]["status"] = "complete"
+            etch._jobs[job_id]["file_path"] = "unused"
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "gk")
+    monkeypatch.setattr(etch, "_run_generation", fake_run_generation)
+    monkeypatch.setattr(etch.threading, "Thread", _SyncThread)
+
+    png_bytes = base64.b64decode(_PNG_B64)
+    paths = []
+    for i in range(2):
+        f = tmp_path / f"ref_{i}.png"
+        f.write_bytes(png_bytes)
+        paths.append(str(f))
+
+    job_id = etch.start_diagram_job(
+        "draw a box", output_dir=str(tmp_path), reference_images=paths
+    )
+    assert job_id in etch._jobs
+    refs = captured["reference_images"]
+    assert len(refs) == 2
+    assert all(r == etch.ReferenceImage(png_bytes, "image/png") for r in refs)
+
+
+def test_start_diagram_job_rejects_references_for_unsupported_provider_before_queuing(
+    monkeypatch, tmp_path
+):
+    """A provider with max_reference_images == 0 must raise ValueError before any job is queued."""
+    monkeypatch.setenv("MAI_API_KEY", "mk")
+    monkeypatch.setenv("MAI_ENDPOINT", "https://res.services.ai.azure.com")
+
+    png_bytes = base64.b64decode(_PNG_B64)
+    f = tmp_path / "ref.png"
+    f.write_bytes(png_bytes)
+
+    jobs_before = dict(etch._jobs)
+    with pytest.raises(ValueError, match="does not support reference-image conditioning"):
+        etch.start_diagram_job(
+            "draw a box",
+            aspect_ratio="1:1",
+            resolution="1K",
+            output_dir=str(tmp_path),
+            model="mai-image-2.5",
+            reference_images=[str(f)],
+        )
+    assert etch._jobs == jobs_before
+
+
+class _SyncThread:
+    """A threading.Thread stand-in that runs the target synchronously on start()."""
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)

@@ -421,13 +421,16 @@ def _run_generation(
     aspect_ratio: str,
     resolution: str,
     output_dir: Path,
+    reference_images: Sequence[ReferenceImage] = (),
 ) -> None:
     try:
         with _jobs_lock:
             _jobs[job_id]["status"] = "generating"
 
         prompt = _build_prompt(description, audience)
-        image_bytes = provider.generate(prompt, aspect_ratio, resolution, api_key)
+        image_bytes = provider.generate(
+            prompt, aspect_ratio, resolution, api_key, reference_images=reference_images
+        )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         file_path = output_dir / f"diagram_{datetime.now():%Y%m%d_%H%M%S}_{job_id[:8]}.png"
@@ -450,6 +453,7 @@ def start_diagram_job(
     output_dir: Optional[str] = None,
     audience: Optional[str] = None,
     model: str = DEFAULT_MODEL,
+    reference_images: Optional[list[str]] = None,
 ) -> str:
     """Start an async diagram-generation job. Returns a job_id; poll check_job_status.
 
@@ -467,6 +471,13 @@ def start_diagram_job(
         model: Image backend. "gemini-3-pro-image-preview" (default) supports
             every aspect_ratio at 1K/2K. "mai-image-2.5" is ~1 MP only: it
             rejects 2K and 21:9 — use 1K with a non-ultrawide ratio.
+        reference_images: Optional list of image file paths on disk (PNG,
+            JPEG, WebP, or HEIC) to condition generation on — typically a
+            prior job's output PNG, used to refine a draft into a final
+            diagram over successive calls. Gemini-only: it accepts up to
+            ``max_reference_images`` (14) reference images. "mai-image-2.5"
+            is text-to-image only and rejects any reference images with a
+            ValueError, raised here before a job is queued.
     """
     provider = resolve_provider(model)
     validate_capabilities(provider, aspect_ratio, resolution)
@@ -474,6 +485,9 @@ def start_diagram_job(
 
     # Validate audience eagerly: raises ValueError if over cap, before queuing.
     _build_prompt(description, audience)
+
+    # Load + validate reference images eagerly (fail-fast, before queuing).
+    loaded_references = _load_reference_images(reference_images or [], provider)
 
     _cleanup_jobs()
     job_id = str(uuid.uuid4())
@@ -484,7 +498,17 @@ def start_diagram_job(
 
     threading.Thread(
         target=_run_generation,
-        args=(job_id, provider, api_key, description, audience, aspect_ratio, resolution, out_dir),
+        args=(
+            job_id,
+            provider,
+            api_key,
+            description,
+            audience,
+            aspect_ratio,
+            resolution,
+            out_dir,
+            loaded_references,
+        ),
         daemon=True,
     ).start()
 
