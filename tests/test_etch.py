@@ -524,6 +524,118 @@ def test_start_diagram_job_rejects_references_for_unsupported_provider_before_qu
     assert etch._jobs == jobs_before
 
 
+# --- Nano Banana 2 (gemini-3.1-flash-image) ----------------------------------
+
+
+def _fake_gemini_client(captured):
+    """A genai.Client stand-in that records the generate_content call and
+    returns a single inline PNG, matching the shape of a real response."""
+
+    class _Client:
+        def __init__(self, api_key):
+            captured["api_key"] = api_key
+            self.models = self
+
+        def generate_content(self, model, contents, config):
+            captured.update(model=model, contents=contents, config=config)
+            part = etch.types.Part(
+                inline_data=etch.types.Blob(
+                    data=base64.b64decode(_PNG_B64), mime_type="image/png"
+                )
+            )
+            candidate = etch.types.Candidate(content=etch.types.Content(role="model", parts=[part]))
+            return etch.types.GenerateContentResponse(candidates=[candidate])
+
+    return _Client
+
+
+def test_providers_registry_lists_both_gemini_models_and_mai():
+    assert set(etch.PROVIDERS) == {
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image",
+        "mai-image-2.5",
+    }
+
+
+def test_resolve_provider_nb2_returns_gemini_backed_provider():
+    nb2 = etch.resolve_provider("gemini-3.1-flash-image")
+    assert isinstance(nb2, etch.GeminiProvider)
+    assert nb2.model_id == "gemini-3.1-flash-image"
+    assert nb2.key_env_var == "GOOGLE_API_KEY"
+
+
+def test_nb2_supports_512px_and_full_matrix():
+    nb2 = etch.resolve_provider("gemini-3.1-flash-image")
+    for ar in ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"]:
+        for res in ["512px", "1K", "2K"]:
+            assert nb2.supports(ar, res), f"{ar} {res}"
+
+
+def test_pro_still_rejects_512px_via_validate_capabilities():
+    """Pro's matrix is unchanged: 1K/2K only, and 512px fails with the existing message style."""
+    pro = etch.resolve_provider("gemini-3-pro-image-preview")
+    assert not pro.supports("16:9", "512px")
+    with pytest.raises(ValueError, match="does not support"):
+        etch.validate_capabilities(pro, "16:9", "512px")
+
+
+def test_nb2_max_reference_images_is_positive():
+    """NB2 must accept reference images so it can refine a picked variant."""
+    nb2 = etch.resolve_provider("gemini-3.1-flash-image")
+    assert nb2.max_reference_images > 0
+
+
+def test_nb2_generate_uses_nb2_model_id_and_maps_512px_to_sdk_literal(monkeypatch):
+    """NB2 sends its own model_id and maps etch's '512px' to the SDK's '512'."""
+    captured = {}
+    monkeypatch.setattr(etch.genai, "Client", _fake_gemini_client(captured))
+    nb2 = etch.resolve_provider("gemini-3.1-flash-image")
+    out = nb2.generate("draw a box", "16:9", "512px", "gk")
+
+    assert out == base64.b64decode(_PNG_B64)
+    assert captured["model"] == "gemini-3.1-flash-image"
+    assert captured["config"].image_config.image_size == "512"
+    assert captured["config"].image_config.aspect_ratio == "16:9"
+
+
+def test_nb2_generate_passes_1k_and_2k_through_unchanged(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(etch.genai, "Client", _fake_gemini_client(captured))
+    nb2 = etch.resolve_provider("gemini-3.1-flash-image")
+    for res in ["1K", "2K"]:
+        nb2.generate("draw a box", "16:9", res, "gk")
+        assert captured["config"].image_config.image_size == res
+
+
+def test_nb2_generate_with_references_includes_image_parts(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(etch.genai, "Client", _fake_gemini_client(captured))
+    nb2 = etch.resolve_provider("gemini-3.1-flash-image")
+    refs = [etch.ReferenceImage(b"fake-png-bytes-1", "image/png")]
+    nb2.generate("refine the pick", "16:9", "512px", "gk", reference_images=refs)
+
+    assert captured["model"] == "gemini-3.1-flash-image"
+    parts = captured["contents"][0].parts
+    assert len(parts) == 2  # 1 reference image + 1 text part
+    image_parts = [p for p in parts if p.inline_data is not None]
+    assert len(image_parts) == 1
+    assert image_parts[0].inline_data.data == b"fake-png-bytes-1"
+    assert parts[-1].text == "refine the pick"
+
+
+def test_pro_generate_request_is_byte_identical_after_nb2(monkeypatch):
+    """Hard constraint: Pro still sends its own model_id and an unmapped 1K/2K image_size."""
+    captured = {}
+    monkeypatch.setattr(etch.genai, "Client", _fake_gemini_client(captured))
+    pro = etch.resolve_provider("gemini-3-pro-image-preview")
+    pro.generate("draw a box", "16:9", "2K", "gk")
+
+    assert captured["model"] == "gemini-3-pro-image-preview"
+    assert captured["config"].image_config.image_size == "2K"
+    assert captured["config"].image_config.aspect_ratio == "16:9"
+    assert captured["contents"][0].parts[0].text == "draw a box"
+
+
 class _SyncThread:
     """A threading.Thread stand-in that runs the target synchronously on start()."""
 

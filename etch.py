@@ -13,8 +13,9 @@ from google.genai import types
 from mcp.server.fastmcp import FastMCP
 
 DEFAULT_MODEL = "gemini-3-pro-image-preview"
+NB2_MODEL = "gemini-3.1-flash-image"  # Nano Banana 2, the fast Flash model
 ALLOWED_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "21:9"}
-ALLOWED_RESOLUTIONS = {"1K", "2K"}
+ALLOWED_RESOLUTIONS = {"1K", "2K"}  # Pro's tiers; NB2 additionally accepts "512px"
 MAX_JOBS = 10
 JOB_TTL = timedelta(minutes=10)
 MAX_AUDIENCE_LEN = 4000
@@ -65,19 +66,39 @@ class ImageProvider(Protocol):
 
 
 class GeminiProvider:
-    """Google Gemini (default). Takes aspect_ratio and resolution natively."""
+    """Google Gemini image models. Takes aspect_ratio and resolution natively.
 
-    model_id = DEFAULT_MODEL
+    Parameterized by ``model_id`` and the set of resolution tokens that model
+    accepts, so Pro (the default) and Nano Banana 2 (``NB2_MODEL``) share the
+    same ``generate()`` SDK path and differ only in registration.
+    """
+
     key_env_var = "GOOGLE_API_KEY"
     max_reference_images = 14
 
+    # etch resolution token -> the image_size string the google-genai SDK
+    # expects. Confirmed against the installed SDK (google-genai 2.10.0):
+    # its enumerated image sizes are "1K" | "2K" | "4K" | "512"
+    # (ImageConfigImageSize in google/genai/_gaos/types/interactions/
+    # imageconfig.py), so etch's "512px" token maps to the SDK literal
+    # "512"; "1K" and "2K" pass through unchanged.
+    _IMAGE_SIZE_MAP: dict[str, str] = {"512px": "512", "1K": "1K", "2K": "2K"}
+
+    def __init__(
+        self,
+        model_id: str = DEFAULT_MODEL,
+        supported_resolutions: frozenset[str] = frozenset(ALLOWED_RESOLUTIONS),
+    ) -> None:
+        self.model_id = model_id
+        self._supported_resolutions = frozenset(supported_resolutions)
+
     def supports(self, aspect_ratio: str, resolution: str) -> bool:
-        return aspect_ratio in ALLOWED_ASPECT_RATIOS and resolution in ALLOWED_RESOLUTIONS
+        return aspect_ratio in ALLOWED_ASPECT_RATIOS and resolution in self._supported_resolutions
 
     def describe_support(self) -> str:
         return (
             f"aspect_ratio ∈ {sorted(ALLOWED_ASPECT_RATIOS)}, "
-            f"resolution ∈ {sorted(ALLOWED_RESOLUTIONS)}, "
+            f"resolution ∈ {sorted(self._supported_resolutions)}, "
             f"reference_images <= {self.max_reference_images}"
         )
 
@@ -103,7 +124,8 @@ class GeminiProvider:
                     max_output_tokens=32768,
                     response_modalities=["IMAGE"],
                     image_config=types.ImageConfig(
-                        aspect_ratio=aspect_ratio, image_size=resolution
+                        aspect_ratio=aspect_ratio,
+                        image_size=self._IMAGE_SIZE_MAP.get(resolution, resolution),
                     ),
                 ),
             )
@@ -267,7 +289,15 @@ class MAIProvider:
 
 
 PROVIDERS: dict[str, ImageProvider] = {
-    p.model_id: p for p in (GeminiProvider(), MAIProvider())
+    p.model_id: p
+    for p in (
+        GeminiProvider(),
+        GeminiProvider(
+            model_id=NB2_MODEL,
+            supported_resolutions=frozenset(ALLOWED_RESOLUTIONS | {"512px"}),
+        ),
+        MAIProvider(),
+    )
 }
 
 
@@ -460,7 +490,7 @@ def start_diagram_job(
     Args:
         description: What to draw — components, labels, relationships.
         aspect_ratio: 1:1, 16:9, 9:16, 4:3, 3:4, or 21:9.
-        resolution: 1K or 2K.
+        resolution: 1K or 2K ("gemini-3.1-flash-image" also accepts 512px).
         output_dir: Where to save the PNG (defaults to cwd).
         audience: Optional free-form description of the target audience.
             When provided, the description is wrapped with a frame instructing
@@ -469,8 +499,10 @@ def start_diagram_job(
             expected to author rich audience prose; raw human-typed audience
             strings ("for developers") also work but produce weaker steering.
         model: Image backend. "gemini-3-pro-image-preview" (default) supports
-            every aspect_ratio at 1K/2K. "mai-image-2.5" is ~1 MP only: it
-            rejects 2K and 21:9 — use 1K with a non-ultrawide ratio.
+            every aspect_ratio at 1K/2K. "gemini-3.1-flash-image" (Nano
+            Banana 2, the fast Flash model) supports every aspect_ratio at
+            512px/1K/2K. "mai-image-2.5" is ~1 MP only: it rejects 2K and
+            21:9 — use 1K with a non-ultrawide ratio.
         reference_images: Optional list of image file paths on disk (PNG,
             JPEG, WebP, or HEIC) to condition generation on — typically a
             prior job's output PNG, used to refine a draft into a final
