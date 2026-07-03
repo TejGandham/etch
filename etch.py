@@ -5,7 +5,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import NamedTuple, Optional, Protocol, Sequence
 
 import httpx
 from google import genai
@@ -18,6 +18,14 @@ ALLOWED_RESOLUTIONS = {"1K", "2K"}
 MAX_JOBS = 10
 JOB_TTL = timedelta(minutes=10)
 MAX_AUDIENCE_LEN = 4000
+MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB per-file cap for reference images
+
+
+class ReferenceImage(NamedTuple):
+    """A provider-agnostic reference image: raw bytes plus its MIME type."""
+
+    image_bytes: bytes
+    mime_type: str
 
 
 # --- Provider seam ---------------------------------------------------------
@@ -42,10 +50,18 @@ class ImageProvider(Protocol):
 
     model_id: str
     key_env_var: str
+    max_reference_images: int
 
     def supports(self, aspect_ratio: str, resolution: str) -> bool: ...
     def describe_support(self) -> str: ...
-    def generate(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes: ...
+    def generate(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        resolution: str,
+        api_key: str,
+        reference_images: Sequence[ReferenceImage] = (),
+    ) -> bytes: ...
 
 
 class GeminiProvider:
@@ -53,6 +69,7 @@ class GeminiProvider:
 
     model_id = DEFAULT_MODEL
     key_env_var = "GOOGLE_API_KEY"
+    max_reference_images = 14
 
     def supports(self, aspect_ratio: str, resolution: str) -> bool:
         return aspect_ratio in ALLOWED_ASPECT_RATIOS and resolution in ALLOWED_RESOLUTIONS
@@ -60,15 +77,28 @@ class GeminiProvider:
     def describe_support(self) -> str:
         return (
             f"aspect_ratio ∈ {sorted(ALLOWED_ASPECT_RATIOS)}, "
-            f"resolution ∈ {sorted(ALLOWED_RESOLUTIONS)}"
+            f"resolution ∈ {sorted(ALLOWED_RESOLUTIONS)}, "
+            f"reference_images <= {self.max_reference_images}"
         )
 
-    def generate(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes:
+    def generate(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        resolution: str,
+        api_key: str,
+        reference_images: Sequence[ReferenceImage] = (),
+    ) -> bytes:
+        parts = [
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+            for image_bytes, mime_type in reference_images
+        ]
+        parts.append(types.Part(text=prompt))
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
                 model=self.model_id,
-                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                contents=[types.Content(role="user", parts=parts)],
                 config=types.GenerateContentConfig(
                     max_output_tokens=32768,
                     response_modalities=["IMAGE"],
@@ -121,6 +151,7 @@ class MAIProvider:
     """
 
     model_id = "mai-image-2.5"
+    max_reference_images = 0  # text-to-image only in V1; no reference conditioning
 
     # Supported (aspect_ratio, resolution) -> Foundry (width, height); dims are
     # multiples of 8 and each satisfies width,height >= 768 and w*h <= 1,048,576.
@@ -158,9 +189,20 @@ class MAIProvider:
         return (aspect_ratio, resolution) in self._SIZE_MAP
 
     def describe_support(self) -> str:
-        return f"{sorted(self._SIZE_MAP)} (1K only — no 21:9, no 2K)"
+        return f"{sorted(self._SIZE_MAP)} (1K only — no 21:9, no 2K, no reference images)"
 
-    def generate(self, prompt: str, aspect_ratio: str, resolution: str, api_key: str) -> bytes:
+    def generate(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        resolution: str,
+        api_key: str,
+        reference_images: Sequence[ReferenceImage] = (),
+    ) -> bytes:
+        if reference_images:
+            raise GenerationError(
+                "mai-image-2.5 does not support reference-image conditioning (text-to-image only)"
+            )
         if self._transport == "openrouter":
             return self._generate_openrouter(prompt, aspect_ratio, resolution, api_key)
         return self._generate_foundry(prompt, aspect_ratio, resolution, api_key)
@@ -252,6 +294,76 @@ def resolve_api_key(provider: ImageProvider) -> str:
     if not api_key:
         raise RuntimeError(f"{provider.key_env_var} environment variable is not set")
     return api_key
+
+
+# Magic-byte signatures for the reference-image formats we accept.
+_MAGIC_BYTES: dict[bytes, str] = {
+    b"\x89PNG\r\n\x1a\n": "image/png",
+    b"\xff\xd8\xff": "image/jpeg",
+}
+_EXTENSION_MIME_TYPES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".heif": "image/heic",
+}
+
+
+def _detect_image_mime_type(data: bytes, suffix: str) -> Optional[str]:
+    """Detect a reference image's MIME type from magic bytes, falling back to extension."""
+    for magic, mime_type in _MAGIC_BYTES.items():
+        if data.startswith(magic):
+            return mime_type
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[4:8] == b"ftyp":
+        return "image/heic"
+    return _EXTENSION_MIME_TYPES.get(suffix.lower())
+
+
+def _load_reference_images(paths: list[str], provider: ImageProvider) -> list[ReferenceImage]:
+    """Read and validate reference image files for a tool call, tool-boundary side.
+
+    Raises ValueError with a clear message on: a missing/unreadable file, an
+    unsupported format (only PNG/JPEG/WebP/HEIC), too many images for the
+    provider, a provider that doesn't support reference conditioning at all
+    (``max_reference_images == 0``), or a file over ``MAX_REFERENCE_IMAGE_BYTES``.
+    """
+    if not paths:
+        return []
+    if provider.max_reference_images == 0:
+        raise ValueError(f"{provider.model_id} does not support reference-image conditioning")
+    if len(paths) > provider.max_reference_images:
+        raise ValueError(
+            f"{provider.model_id} supports at most {provider.max_reference_images} "
+            f"reference images (got {len(paths)})"
+        )
+
+    images: list[ReferenceImage] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            raise ValueError(f"cannot read reference image {raw_path!r}: {e}") from e
+
+        if len(data) > MAX_REFERENCE_IMAGE_BYTES:
+            raise ValueError(
+                f"reference image {raw_path!r} is {len(data)} bytes, "
+                f"exceeding the {MAX_REFERENCE_IMAGE_BYTES}-byte limit"
+            )
+
+        mime_type = _detect_image_mime_type(data, path.suffix)
+        if mime_type is None:
+            raise ValueError(
+                f"reference image {raw_path!r} is not a supported format "
+                "(expected PNG, JPEG, WebP, or HEIC)"
+            )
+        images.append(ReferenceImage(data, mime_type))
+
+    return images
 
 
 mcp = FastMCP("etch")

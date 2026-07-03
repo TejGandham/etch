@@ -227,3 +227,163 @@ def test_mai_foundry_missing_endpoint_raises():
     p = etch.MAIProvider(transport="foundry", endpoint="")
     with pytest.raises(etch.GenerationError, match="MAI_ENDPOINT"):
         p.generate("x", "1:1", "1K", "k")
+
+
+# --- Reference-image conditioning -------------------------------------------
+
+
+def test_gemini_max_reference_images_is_14():
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    assert g.max_reference_images == 14
+
+
+def test_mai_max_reference_images_is_0():
+    m = etch.resolve_provider("mai-image-2.5")
+    assert m.max_reference_images == 0
+
+
+def test_gemini_generate_without_references_is_byte_identical_to_baseline(monkeypatch):
+    """Hard constraint: empty reference_images must build the same contents as before."""
+    captured = {}
+
+    class _Client:
+        def __init__(self, api_key):
+            self.models = self
+
+        def generate_content(self, model, contents, config):
+            captured["contents"] = contents
+            captured["config"] = config
+            part = etch.types.Part(
+                inline_data=etch.types.Blob(
+                    data=base64.b64decode(_PNG_B64), mime_type="image/png"
+                )
+            )
+            candidate = etch.types.Candidate(content=etch.types.Content(role="model", parts=[part]))
+            return etch.types.GenerateContentResponse(candidates=[candidate])
+
+    monkeypatch.setattr(etch.genai, "Client", _Client)
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    out = g.generate("draw a box", "16:9", "2K", "gk")
+
+    assert out == base64.b64decode(_PNG_B64)
+    contents = captured["contents"]
+    assert len(contents) == 1
+    assert contents[0].role == "user"
+    assert len(contents[0].parts) == 1
+    assert contents[0].parts[0].text == "draw a box"
+    assert contents[0].parts[0].inline_data is None
+
+
+def test_gemini_generate_with_references_includes_image_parts(monkeypatch):
+    captured = {}
+
+    class _Client:
+        def __init__(self, api_key):
+            self.models = self
+
+        def generate_content(self, model, contents, config):
+            captured["contents"] = contents
+            part = etch.types.Part(
+                inline_data=etch.types.Blob(
+                    data=base64.b64decode(_PNG_B64), mime_type="image/png"
+                )
+            )
+            candidate = etch.types.Candidate(content=etch.types.Content(role="model", parts=[part]))
+            return etch.types.GenerateContentResponse(candidates=[candidate])
+
+    monkeypatch.setattr(etch.genai, "Client", _Client)
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    refs = [
+        etch.ReferenceImage(b"fake-png-bytes-1", "image/png"),
+        etch.ReferenceImage(b"fake-png-bytes-2", "image/jpeg"),
+    ]
+    g.generate("draw a box", "16:9", "2K", "gk", reference_images=refs)
+
+    contents = captured["contents"]
+    assert len(contents) == 1
+    parts = contents[0].parts
+    assert len(parts) == 3  # 2 reference images + 1 text part
+    image_parts = [p for p in parts if p.inline_data is not None]
+    text_parts = [p for p in parts if p.text is not None]
+    assert len(image_parts) == 2
+    assert len(text_parts) == 1
+    assert text_parts[0].text == "draw a box"
+    assert {p.inline_data.data for p in image_parts} == {b"fake-png-bytes-1", b"fake-png-bytes-2"}
+    assert {p.inline_data.mime_type for p in image_parts} == {"image/png", "image/jpeg"}
+
+
+def test_mai_generate_raises_when_reference_images_supplied():
+    p = etch.MAIProvider(transport="foundry", endpoint="https://res.services.ai.azure.com")
+    refs = [etch.ReferenceImage(b"data", "image/png")]
+    with pytest.raises(etch.GenerationError, match="does not support"):
+        p.generate("x", "1:1", "1K", "k", reference_images=refs)
+
+
+def test_mai_generate_unaffected_when_no_reference_images(monkeypatch):
+    """Existing MAI transport behavior is unchanged when reference_images is omitted."""
+    monkeypatch.setattr(
+        etch.httpx, "post",
+        lambda url, headers, json, timeout: _FakeResp({"data": [{"b64_json": _PNG_B64}]}),
+    )
+    p = etch.MAIProvider(transport="foundry", endpoint="https://res.services.ai.azure.com")
+    out = p.generate("draw a box", "16:9", "1K", "azkey")
+    assert out == base64.b64decode(_PNG_B64)
+
+
+def test_load_reference_images_empty_paths_returns_empty_list():
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    assert etch._load_reference_images([], g) == []
+
+
+def test_load_reference_images_missing_file_raises(tmp_path):
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    missing = str(tmp_path / "does-not-exist.png")
+    with pytest.raises(ValueError, match="cannot read"):
+        etch._load_reference_images([missing], g)
+
+
+def test_load_reference_images_unsupported_format_raises(tmp_path):
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    bad_file = tmp_path / "not-an-image.txt"
+    bad_file.write_bytes(b"just some text, not an image")
+    with pytest.raises(ValueError, match="not a supported format"):
+        etch._load_reference_images([str(bad_file)], g)
+
+
+def test_load_reference_images_over_provider_max_raises(tmp_path):
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    png_bytes = base64.b64decode(_PNG_B64)
+    paths = []
+    for i in range(g.max_reference_images + 1):
+        f = tmp_path / f"ref_{i}.png"
+        f.write_bytes(png_bytes)
+        paths.append(str(f))
+    with pytest.raises(ValueError, match="at most"):
+        etch._load_reference_images(paths, g)
+
+
+def test_load_reference_images_provider_with_max_zero_raises(tmp_path):
+    m = etch.resolve_provider("mai-image-2.5")
+    png_bytes = base64.b64decode(_PNG_B64)
+    f = tmp_path / "ref.png"
+    f.write_bytes(png_bytes)
+    with pytest.raises(ValueError, match="does not support reference-image conditioning"):
+        etch._load_reference_images([str(f)], m)
+
+
+def test_load_reference_images_oversized_file_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(etch, "MAX_REFERENCE_IMAGE_BYTES", 10)
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    f = tmp_path / "ref.png"
+    f.write_bytes(base64.b64decode(_PNG_B64))  # well over 10 bytes
+    with pytest.raises(ValueError, match="exceeding"):
+        etch._load_reference_images([str(f)], g)
+
+
+def test_load_reference_images_valid_png_returns_bytes_and_mime(tmp_path):
+    g = etch.resolve_provider("gemini-3-pro-image-preview")
+    png_bytes = base64.b64decode(_PNG_B64)
+    f = tmp_path / "ref.png"
+    f.write_bytes(png_bytes)
+    result = etch._load_reference_images([str(f)], g)
+    assert result == [etch.ReferenceImage(png_bytes, "image/png")]
