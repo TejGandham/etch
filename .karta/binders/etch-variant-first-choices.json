@@ -1,0 +1,118 @@
+{
+  "slug": "etch-variant-first-choices",
+  "title": "Variant first-choices on Nano Banana 2, then refine the pick",
+  "summary": "Add Nano Banana 2 (the fast Flash model) with a 512px tier, then let the calling agent author several distinct compositions of a diagram and generate them cheaply at 512px so the user can pick one, and refine that pick into a higher-resolution final on the same model. It brings Google's cheap pick-from-many workflow to etch while keeping both stages on one model so the image feedback carries over.",
+  "motivation": "Seedless models produce a different image every run; the cheapest way to land a good composition is to have the agent author several deliberate 512px candidates on the fast model, let the user choose, and refine the winner via reference conditioning on that same model.",
+  "scope": {
+    "included": [
+      "etch.py: register Nano Banana 2 (gemini-3.1-flash-image) as a provider alongside Pro, reusing the Gemini generate() seam",
+      "etch.py: add a 512px resolution tier, gated per provider (NB2 supports 512px/1K/2K; Pro still 1K/2K only)",
+      "etch.py: a new start_variant_job MCP tool that takes up to 5 agent-authored descriptions (one distinct composition each), generates one 512px image per description on NB2, and returns a job id",
+      "etch.py: multi-image job state + concurrent generation for a variant job, and check_job_status extended to report k/n progress and list all saved paths",
+      "Docs: README.md, how-it-works.md, skills/etch/SKILL.md, .env.example — Nano Banana 2 as a model and the variants -> pick -> refine workflow"
+    ],
+    "excluded": [
+      "Cross-model refine (e.g. Lite variants -> Pro final): variants and the final render use the SAME model (default NB2) so image feedback transfers; cross-model reinterpretation is out of V1",
+      "Nano Banana 2 Lite (gemini-3.1-flash-lite-image): Lite is 1K-only and text-weak; NB2 Flash is the chosen variant model",
+      "Any web frontend or backend changes — MCP-tool-flow only (web/frontend/** and web/backend/** untouched)",
+      "A new finalize tool — the final render reuses the already-shipped start_diagram_job(model=..., reference_images=[picked])",
+      "Hard-enforcing that the variant model equals the finalize model — defaulted and documented, not enforced in V1",
+      "Changing single-image start_diagram_job behavior for existing models/resolutions, or Pro's rejection of 512px (must stay byte-identical)"
+    ]
+  },
+  "design_facts": {
+    "source": null,
+    "stack": "Python MCP server (FastMCP) + FastAPI web backend; google-genai SDK for Gemini, httpx for MAI-Image-2.5; pytest, run via uv"
+  },
+  "sme": ["minimalism", "python-fastapi"],
+  "env_contract": {
+    "command": "uv run pytest",
+    "supports_isolation": true
+  },
+  "runtime_contract": {
+    "runtimes": [
+      { "name": "python", "version": ">=3.11" }
+    ],
+    "on_unavailable": "halt"
+  },
+  "work_items": [
+    {
+      "id": "nb2-provider",
+      "title": "Add Nano Banana 2 as a model with a 512px tier",
+      "summary": "Register the fast Nano Banana 2 model so etch can generate on it, including a cheap 512px option that Pro doesn't offer.",
+      "estimate": "M",
+      "depends_on": [],
+      "contract": {
+        "exposes": "PROVIDERS gains Nano Banana 2 (model_id 'gemini-3.1-flash-image') alongside the existing Pro ('gemini-3-pro-image-preview'). The Gemini-backed provider is parameterized by model_id and a per-provider supported (aspect_ratio, resolution) capability set (constructor arg or a small subclass) so the two share the same generate() SDK path. A new '512px' resolution token is added to etch's vocabulary and gated per provider: NB2 supports {512px, 1K, 2K}; Pro STILL supports only {1K, 2K} and must reject 512px via validate_capabilities with the existing clear message. The NB2 provider maps the '512px' token to the image_size value google-genai expects for the 0.5K tier (build confirms the exact SDK string). NB2 sets max_reference_images > 0 (so it can consume a reference for the refine step). All existing Pro behavior — default model, 1K/2K, reference conditioning, single-image generate — stays byte-identical; MAIProvider is untouched.",
+        "consumes": "The existing GeminiProvider.generate SDK logic (google-genai generate_content with image_config), the PROVIDERS registry, resolve_provider, and validate_capabilities."
+      },
+      "touches": ["etch.py", "tests/test_etch.py"],
+      "surface": {
+        "flagged": true,
+        "signals": [
+          "contract-mutation: adds a model id to the PROVIDERS registry and a new '512px' resolution token to the public capability vocabulary (additive; Pro's matrix unchanged)",
+          "capability-escalation: integrates a new upstream model (gemini-3.1-flash-image)",
+          "blast-radius: etch.py is edited by two work items (nb2-provider and variant-generation)"
+        ]
+      },
+      "oracle": {
+        "type": "unit",
+        "command": "uv run pytest -q tests/test_etch.py",
+        "assertions": [
+          "resolve_provider('gemini-3.1-flash-image') returns the NB2 provider; PROVIDERS lists both Gemini models plus mai-image-2.5.",
+          "NB2 supports 512px (and 1K/2K); Pro still rejects 512px via validate_capabilities with the existing message style.",
+          "NB2 generate() issues the request with model_id 'gemini-3.1-flash-image' and the mapped 512px image_size, and includes reference-image parts when references are supplied (max_reference_images > 0).",
+          "All existing Pro tests pass unchanged — default model, capability matrix, and reference conditioning are byte-identical."
+        ]
+      }
+    },
+    {
+      "id": "variant-generation",
+      "title": "Generate one image per agent-authored composition (up to five)",
+      "summary": "Add a tool that takes several agent-written descriptions of the same diagram and generates one fast 512px image for each, so the caller gets a set of distinct compositions to choose from.",
+      "estimate": "M",
+      "depends_on": ["nb2-provider"],
+      "contract": {
+        "exposes": "start_variant_job(descriptions: list[str], aspect_ratio: str = \"16:9\", resolution: str = \"512px\", output_dir: Optional[str] = None, audience: Optional[str] = None, model: str = \"gemini-3.1-flash-image\") -> str returns a job_id. `descriptions` is a list of 1..MAX_VARIANTS (MAX_VARIANTS = 5) prompts — the calling agent authors several DISTINCT compositions of the SAME diagram (varying layout, grouping, emphasis); one image is generated per description. Passing the same string repeated is allowed and yields non-deterministic rolls (the models are seedless), so this signature subsumes simple N-roll variety. Defaults to Nano Banana 2 @ 512px so the same model can finalize the pick. Validates fail-fast BEFORE queuing (same style as start_diagram_job): provider capability for (aspect_ratio, resolution), 1 <= len(descriptions) <= MAX_VARIANTS, the audience cap (applied to each description), and the api key. It then generates one variant per description concurrently under one job_id — each description individually wrapped by _build_prompt(desc, audience) — writing each to its own distinct PNG in output_dir (filenames carry a variant index; results tracked in INPUT ORDER so the agent can map each path back to the composition it authored). Job state holds per-variant status and the ordered saved-paths list; if some variants fail, the job still completes with the successful paths and reports k/n, while zero successes marks the job failed. check_job_status(job_id) is extended so a variant job reports progress ('generating (k/n complete)') and, on completion, lists all saved paths in input order; a single-image start_diagram_job job's status string is UNCHANGED (byte-identical).",
+        "consumes": "The nb2-provider registration (default model gemini-3.1-flash-image + 512px), the ImageProvider.generate seam, _build_prompt, resolve_provider/validate_capabilities/resolve_api_key, and the _jobs/_jobs_lock/_cleanup_jobs machinery."
+      },
+      "touches": ["etch.py", "tests/test_etch.py"],
+      "surface": {
+        "flagged": true,
+        "signals": [
+          "contract-mutation: adds a new public MCP tool (start_variant_job) and changes check_job_status output for variant jobs (single-image output unchanged)",
+          "capability-escalation: fans out up to 5 concurrent provider generations per job (new concurrency / outbound IO)",
+          "blast-radius: etch.py is edited by two work items (nb2-provider and variant-generation)"
+        ]
+      },
+      "oracle": {
+        "type": "unit",
+        "command": "uv run pytest -q tests/test_etch.py",
+        "assertions": [
+          "start_variant_job with a list of k descriptions (1 <= k <= 5) generates one image per description, invoking provider.generate k times (mocked provider captures the calls), each prompt individually wrapped with the audience frame, producing k distinct paths in INPUT ORDER.",
+          "An empty descriptions list or more than MAX_VARIANTS (len > 5) raises ValueError before the job is queued — no job_id returned, no thread started, _jobs unchanged.",
+          "Default model is gemini-3.1-flash-image and default resolution 512px; an unsupported (aspect_ratio, resolution) for the chosen model, an over-cap audience, or a missing api key each raise before queuing, same as start_diagram_job.",
+          "check_job_status on a variant job reports k/n progress and lists all saved paths (in input order) on completion; a single-image start_diagram_job job's status string is byte-identical to today.",
+          "A variant job where some generations fail still completes with the successful paths and reports k/n; zero successes marks the job failed."
+        ]
+      }
+    },
+    {
+      "id": "variant-docs",
+      "title": "Document Nano Banana 2 and the variants-then-refine workflow",
+      "summary": "Explain the new fast model and how to generate first-choice variants, pick one, and refine it into the final on the same model.",
+      "estimate": "S",
+      "depends_on": ["variant-generation"],
+      "contract": "Update README.md (add Nano Banana 2 / gemini-3.1-flash-image to the Models table with its 512px/1K/2K support and rough pricing; add the start_variant_job(descriptions=[...]) signature; a 'Variants -> pick -> refine' subsection: the agent authors up to 5 distinct compositions of the same diagram and generates them at 512px on NB2, presents them (recommending one), the user picks, then the winner is refined at higher resolution with start_diagram_job(model=gemini-3.1-flash-image, resolution='2K', reference_images=[the pick]); state that variants and the final must use the SAME model so image feedback transfers, and that NB2 delivers ~95% of Pro's quality at a fraction of the cost). Update how-it-works.md (note NB2 as a provider and the author-many -> pick -> refine flow). Update skills/etch/SKILL.md (guidance: when the user wants options, author up to 5 DISTINCT compositions of the same diagram — vary layout, grouping, emphasis — call start_variant_job with that list, present the results and recommend one for the human to confirm (auto-pick when running headless), then refine the chosen path with start_diagram_job + reference_images on the same model). Update .env.example (note NB2 reuses GOOGLE_API_KEY — no new env var). Prose must match the shipped behavior and stay in plain language.",
+      "touches": ["README.md", "how-it-works.md", "skills/etch/SKILL.md", ".env.example"],
+      "surface": {
+        "flagged": false,
+        "signals": []
+      },
+      "oracle": {
+        "opt_out": true,
+        "reason": "Docs-only prose change; the repo has no docs linter, link-checker, or CI doc gate, so there is no CI-facing check to run. Accuracy is verified by review against the shipped code; doc-gardner (now enabled) also sweeps docs at delivery."
+      }
+    }
+  ]
+}
