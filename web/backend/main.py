@@ -107,6 +107,7 @@ class DiagramRequest(BaseModel):
     audience: Optional[str] = None
     codebase_path: Optional[str] = None
     model: str = etch.DEFAULT_MODEL
+    reference_images: Optional[list[str]] = None
 
 def execute_generation_task(job_id: str, req: DiagramRequest):
     try:
@@ -159,6 +160,15 @@ def execute_generation_task(job_id: str, req: DiagramRequest):
             jobs_cache[job_id]["imageUrl"] = f"/static/{file_path.name}"
             return
 
+        loaded_references = []
+        if req.reference_images:
+            try:
+                loaded_references = etch._load_reference_images(req.reference_images, provider)
+            except ValueError as e:
+                jobs_cache[job_id]["status"] = "failed"
+                jobs_cache[job_id]["error"] = str(e)
+                return
+
         with etch._jobs_lock:
             etch._jobs[job_id] = {"status": "queued", "created": datetime.now()}
 
@@ -171,7 +181,8 @@ def execute_generation_task(job_id: str, req: DiagramRequest):
             audience=req.audience,
             aspect_ratio=req.aspect_ratio,
             resolution=req.resolution,
-            output_dir=OUTPUT_DIR
+            output_dir=OUTPUT_DIR,
+            reference_images=loaded_references
         )
         
         # Check output
