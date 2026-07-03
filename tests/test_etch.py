@@ -646,3 +646,295 @@ class _SyncThread:
 
     def start(self):
         self._target(*self._args, **self._kwargs)
+
+    def join(self, timeout=None):
+        pass  # target already ran synchronously in start()
+
+
+class _NeverThread:
+    """A threading.Thread stand-in that records construction and never runs."""
+
+    instances: list = []
+
+    def __init__(self, *args, **kwargs):
+        type(self).instances.append(self)
+
+    def start(self):
+        pass
+
+    def join(self, timeout=None):
+        pass
+
+
+# --- start_variant_job --------------------------------------------------------
+
+
+class _VariantFakeProvider(_FakeProvider):
+    """A _FakeProvider whose output encodes the prompt, so each saved file maps
+    back to the description that produced it; prompts containing 'FAIL' raise."""
+
+    def generate(self, prompt, aspect_ratio, resolution, api_key, reference_images=()):
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "resolution": resolution,
+                "api_key": api_key,
+                "reference_images": list(reference_images),
+            }
+        )
+        if "FAIL" in prompt:
+            raise etch.GenerationError("boom")
+        return b"IMG:" + prompt.encode()
+
+
+def _register_variant_fake(monkeypatch, model_id="fake-model"):
+    """Register a synchronous fake provider under model_id and return it."""
+    provider = _VariantFakeProvider()
+    provider.model_id = model_id
+    monkeypatch.setitem(etch.PROVIDERS, model_id, provider)
+    monkeypatch.setenv(provider.key_env_var, "fk")
+    monkeypatch.setattr(etch.threading, "Thread", _SyncThread)
+    return provider
+
+
+def test_start_variant_job_single_description_generates_one_image(monkeypatch, tmp_path):
+    provider = _register_variant_fake(monkeypatch)
+
+    job_id = etch.start_variant_job(
+        ["one composition"], model="fake-model", output_dir=str(tmp_path)
+    )
+
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["prompt"] == "one composition"  # no audience -> unwrapped
+    job = etch._jobs[job_id]
+    assert job["status"] == "complete"
+    assert job["total"] == 1
+    [path] = job["variant_paths"]
+    assert path is not None
+    assert etch.Path(path).read_bytes() == b"IMG:one composition"
+
+
+def test_start_variant_job_generates_one_image_per_description_in_input_order(
+    monkeypatch, tmp_path
+):
+    provider = _register_variant_fake(monkeypatch)
+    descriptions = [f"composition number {i}" for i in range(5)]
+
+    job_id = etch.start_variant_job(
+        descriptions, model="fake-model", output_dir=str(tmp_path)
+    )
+
+    assert [c["prompt"] for c in provider.calls] == descriptions
+    job = etch._jobs[job_id]
+    assert job["status"] == "complete"
+    paths = job["variant_paths"]
+    assert len(paths) == 5
+    assert len(set(paths)) == 5  # five distinct files
+    for i, (description, path) in enumerate(zip(descriptions, paths)):
+        # Input order: slot i holds the image generated from descriptions[i].
+        assert etch.Path(path).read_bytes() == b"IMG:" + description.encode()
+        # Filenames carry the 1-based variant index.
+        assert etch.Path(path).name.startswith(f"variant_{i + 1}_")
+
+
+def test_start_variant_job_wraps_each_description_with_audience(monkeypatch, tmp_path):
+    provider = _register_variant_fake(monkeypatch)
+    descriptions = ["layout A", "layout B", "layout C"]
+    audience = "Executives evaluating platform spend."
+
+    etch.start_variant_job(
+        descriptions, model="fake-model", output_dir=str(tmp_path), audience=audience
+    )
+
+    assert len(provider.calls) == 3
+    for description, call in zip(descriptions, provider.calls):
+        assert call["prompt"] == etch._build_prompt(description, audience)
+        assert "[Target audience]" in call["prompt"]
+        assert audience in call["prompt"]
+        assert description in call["prompt"]
+
+
+def test_start_variant_job_empty_list_raises_before_queuing(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "gk")
+    monkeypatch.setattr(etch.threading, "Thread", _NeverThread)
+    _NeverThread.instances = []
+    jobs_before = dict(etch._jobs)
+
+    with pytest.raises(ValueError, match="descriptions"):
+        etch.start_variant_job([])
+
+    assert etch._jobs == jobs_before
+    assert _NeverThread.instances == []
+
+
+def test_start_variant_job_over_max_variants_raises_before_queuing(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "gk")
+    monkeypatch.setattr(etch.threading, "Thread", _NeverThread)
+    _NeverThread.instances = []
+    jobs_before = dict(etch._jobs)
+
+    with pytest.raises(ValueError, match="descriptions"):
+        etch.start_variant_job(["d"] * (etch.MAX_VARIANTS + 1))
+
+    assert etch._jobs == jobs_before
+    assert _NeverThread.instances == []
+
+
+def test_start_variant_job_defaults_to_nb2_at_512px(monkeypatch, tmp_path):
+    """Defaults route to gemini-3.1-flash-image at 512px without explicit args."""
+    provider = _register_variant_fake(monkeypatch, model_id="gemini-3.1-flash-image")
+    monkeypatch.setenv("FAKE_API_KEY", "fk")
+
+    job_id = etch.start_variant_job(["a composition"], output_dir=str(tmp_path))
+
+    assert len(provider.calls) == 1  # the provider registered under the NB2 id was used
+    assert provider.calls[0]["resolution"] == "512px"
+    assert provider.calls[0]["aspect_ratio"] == "16:9"
+    assert etch._jobs[job_id]["status"] == "complete"
+
+
+def test_start_variant_job_unsupported_combo_raises_before_queuing(monkeypatch):
+    """NB2 rejects an unknown resolution, and Pro rejects 512px, before queuing."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "gk")
+    monkeypatch.setattr(etch.threading, "Thread", _NeverThread)
+    _NeverThread.instances = []
+    jobs_before = dict(etch._jobs)
+
+    with pytest.raises(ValueError, match="does not support"):
+        etch.start_variant_job(["a composition"], resolution="4K")
+    with pytest.raises(ValueError, match="does not support"):
+        etch.start_variant_job(
+            ["a composition"], model="gemini-3-pro-image-preview", resolution="512px"
+        )
+
+    assert etch._jobs == jobs_before
+    assert _NeverThread.instances == []
+
+
+def test_start_variant_job_over_cap_audience_raises_before_queuing(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "gk")
+    monkeypatch.setattr(etch.threading, "Thread", _NeverThread)
+    _NeverThread.instances = []
+    jobs_before = dict(etch._jobs)
+
+    with pytest.raises(ValueError, match="audience"):
+        etch.start_variant_job(
+            ["a composition"], audience="x" * (etch.MAX_AUDIENCE_LEN + 1)
+        )
+
+    assert etch._jobs == jobs_before
+    assert _NeverThread.instances == []
+
+
+def test_start_variant_job_missing_api_key_raises_before_queuing(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(etch.threading, "Thread", _NeverThread)
+    _NeverThread.instances = []
+    jobs_before = dict(etch._jobs)
+
+    with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
+        etch.start_variant_job(["a composition"])
+
+    assert etch._jobs == jobs_before
+    assert _NeverThread.instances == []
+
+
+def test_check_job_status_variant_job_reports_k_of_n_progress():
+    etch._jobs["variant-progress-job"] = {
+        "status": "generating",
+        "created": etch.datetime.now(),
+        "kind": "variant",
+        "total": 3,
+        "variant_statuses": ["complete", "generating", "generating"],
+        "variant_paths": ["/out/variant_1.png", None, None],
+        "variant_errors": [None, None, None],
+    }
+    out = etch.check_job_status("variant-progress-job")
+    assert out.startswith("generating")
+    assert "1/3 complete" in out
+
+
+def test_check_job_status_variant_completion_lists_all_paths_in_input_order(
+    monkeypatch, tmp_path
+):
+    _register_variant_fake(monkeypatch)
+    descriptions = ["first layout", "second layout", "third layout"]
+
+    job_id = etch.start_variant_job(
+        descriptions, model="fake-model", output_dir=str(tmp_path)
+    )
+    out = etch.check_job_status(job_id)
+
+    assert out.startswith("complete")
+    assert "3/3 variants saved" in out
+    paths = etch._jobs[job_id]["variant_paths"]
+    positions = [out.index(p) for p in paths]  # every path listed...
+    assert positions == sorted(positions)  # ...in input order
+    for i in range(3):
+        assert f"variant {i + 1}: " in out
+
+
+def test_check_job_status_single_image_strings_byte_identical():
+    """Regression: start_diagram_job status wording is unchanged, byte for byte."""
+    now = etch.datetime.now()
+    etch._jobs["single-queued"] = {"status": "queued", "created": now}
+    etch._jobs["single-generating"] = {"status": "generating", "created": now}
+    etch._jobs["single-complete"] = {
+        "status": "complete", "created": now, "file_path": "/out/diagram.png",
+    }
+    etch._jobs["single-failed"] = {"status": "failed", "created": now, "error": "boom"}
+
+    assert etch.check_job_status("single-queued") == "queued (0s elapsed)"
+    assert (
+        etch.check_job_status("single-generating")
+        == "generating (0s elapsed, typically 30-60s)"
+    )
+    assert (
+        etch.check_job_status("single-complete")
+        == "complete (0s) — saved to /out/diagram.png"
+    )
+    assert etch.check_job_status("single-failed") == "failed (0s): boom"
+
+
+def test_start_variant_job_partial_failure_completes_with_successful_paths(
+    monkeypatch, tmp_path
+):
+    _register_variant_fake(monkeypatch)
+    descriptions = ["good layout one", "FAIL this layout", "good layout two"]
+
+    job_id = etch.start_variant_job(
+        descriptions, model="fake-model", output_dir=str(tmp_path)
+    )
+
+    job = etch._jobs[job_id]
+    assert job["status"] == "complete"
+    assert job["variant_paths"][1] is None
+    assert job["variant_statuses"][1] == "failed"
+    assert job["variant_errors"][1] is not None
+    assert etch.Path(job["variant_paths"][0]).read_bytes() == b"IMG:good layout one"
+    assert etch.Path(job["variant_paths"][2]).read_bytes() == b"IMG:good layout two"
+
+    out = etch.check_job_status(job_id)
+    assert out.startswith("complete")
+    assert "2/3 variants saved" in out
+    assert "variant 1: " in out
+    assert "variant 3: " in out
+    assert "variant 2: " not in out
+
+
+def test_start_variant_job_all_failures_marks_job_failed(monkeypatch, tmp_path):
+    _register_variant_fake(monkeypatch)
+
+    job_id = etch.start_variant_job(
+        ["FAIL a", "FAIL b"], model="fake-model", output_dir=str(tmp_path)
+    )
+
+    job = etch._jobs[job_id]
+    assert job["status"] == "failed"
+    assert job["variant_paths"] == [None, None]
+    assert "boom" in job["error"]
+
+    out = etch.check_job_status(job_id)
+    assert out.startswith("failed")
+    assert "boom" in out

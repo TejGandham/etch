@@ -17,6 +17,7 @@ NB2_MODEL = "gemini-3.1-flash-image"  # Nano Banana 2, the fast Flash model
 ALLOWED_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "21:9"}
 ALLOWED_RESOLUTIONS = {"1K", "2K"}  # Pro's tiers; NB2 additionally accepts "512px"
 MAX_JOBS = 10
+MAX_VARIANTS = 5  # max agent-authored compositions per start_variant_job call
 JOB_TTL = timedelta(minutes=10)
 MAX_AUDIENCE_LEN = 4000
 MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB per-file cap for reference images
@@ -475,6 +476,107 @@ def _run_generation(
             _jobs[job_id]["error"] = f"{type(e).__name__}: {e}"
 
 
+def _generate_variant(
+    job_id: str,
+    index: int,
+    provider: ImageProvider,
+    api_key: str,
+    description: str,
+    audience: Optional[str],
+    aspect_ratio: str,
+    resolution: str,
+    output_dir: Path,
+) -> None:
+    """Generate one variant (input position ``index``) and record its outcome.
+
+    Success and failure are both recorded per-slot under ``_jobs_lock``; the
+    coordinating ``_run_variant_job`` decides the overall job status once every
+    variant thread has finished.
+    """
+    try:
+        prompt = _build_prompt(description, audience)
+        image_bytes = provider.generate(prompt, aspect_ratio, resolution, api_key)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        file_path = (
+            output_dir
+            / f"variant_{index + 1}_{datetime.now():%Y%m%d_%H%M%S}_{job_id[:8]}.png"
+        )
+        file_path.write_bytes(image_bytes)
+
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None:
+                job["variant_statuses"][index] = "complete"
+                job["variant_paths"][index] = str(file_path)
+    except Exception as e:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None:
+                job["variant_statuses"][index] = "failed"
+                job["variant_errors"][index] = f"{type(e).__name__}: {e}"
+
+
+def _run_variant_job(
+    job_id: str,
+    provider: ImageProvider,
+    api_key: str,
+    descriptions: list[str],
+    audience: Optional[str],
+    aspect_ratio: str,
+    resolution: str,
+    output_dir: Path,
+) -> None:
+    """Fan a variant job out to one generation thread per description, then finalize.
+
+    Plays _run_generation's role for multi-image jobs: runs on the job's
+    background thread, flips the job to "generating", generates every variant
+    concurrently (one daemon thread each), waits for all of them, and marks the
+    job "complete" when at least one variant saved (check_job_status reports
+    k/n) or "failed" with aggregated error info when none did.
+    """
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        job["status"] = "generating"
+        job["variant_statuses"] = ["generating"] * len(descriptions)
+
+    threads = [
+        threading.Thread(
+            target=_generate_variant,
+            args=(
+                job_id,
+                i,
+                provider,
+                api_key,
+                description,
+                audience,
+                aspect_ratio,
+                resolution,
+                output_dir,
+            ),
+            daemon=True,
+        )
+        for i, description in enumerate(descriptions)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        if any(path is not None for path in job["variant_paths"]):
+            job["status"] = "complete"
+        else:
+            job["status"] = "failed"
+            errors = [e for e in job["variant_errors"] if e is not None]
+            job["error"] = "; ".join(errors) if errors else "unknown error"
+
+
 @mcp.tool()
 def start_diagram_job(
     description: str,
@@ -548,14 +650,130 @@ def start_diagram_job(
 
 
 @mcp.tool()
+def start_variant_job(
+    descriptions: list[str],
+    aspect_ratio: str = "16:9",
+    resolution: str = "512px",
+    output_dir: Optional[str] = None,
+    audience: Optional[str] = None,
+    model: str = NB2_MODEL,
+) -> str:
+    """Start an async job generating one image per composition description.
+
+    Author up to 5 DISTINCT compositions of the SAME diagram — varying layout,
+    grouping, and emphasis — and pass them as ``descriptions``; one image is
+    generated per entry, concurrently, under a single job_id. Repeating the
+    same string is allowed: the models are seedless, so each repeat is an
+    independent roll. Defaults to Nano Banana 2 at 512px so the picked variant
+    can then be refined on the SAME model with
+    start_diagram_job(model="gemini-3.1-flash-image", reference_images=[pick]).
+
+    Args:
+        descriptions: 1..5 prompts, one distinct composition each. Results are
+            tracked in input order, so each saved path maps back to the
+            composition that produced it.
+        aspect_ratio: 1:1, 16:9, 9:16, 4:3, 3:4, or 21:9 (shared by all
+            variants).
+        resolution: 512px (default), 1K, or 2K on "gemini-3.1-flash-image";
+            other models keep their own tiers ("gemini-3-pro-image-preview"
+            is 1K/2K only and rejects 512px).
+        output_dir: Where to save the PNGs (defaults to cwd). Each variant
+            gets its own file; filenames carry the 1-based variant index.
+        audience: Optional free-form description of the target audience; each
+            description is individually wrapped with the same audience frame
+            (see start_diagram_job).
+        model: Image backend used for every variant in the job (default
+            "gemini-3.1-flash-image", Nano Banana 2).
+
+    Returns a job_id; poll check_job_status for k/n progress and, on
+    completion, the saved paths in input order.
+    """
+    provider = resolve_provider(model)
+    validate_capabilities(provider, aspect_ratio, resolution)
+    if not 1 <= len(descriptions) <= MAX_VARIANTS:
+        raise ValueError(
+            f"descriptions must contain between 1 and {MAX_VARIANTS} "
+            f"compositions (got {len(descriptions)})"
+        )
+    api_key = resolve_api_key(provider)
+
+    # Validate audience eagerly against each description's wrap: raises
+    # ValueError if over cap, before any job is queued.
+    for description in descriptions:
+        _build_prompt(description, audience)
+
+    _cleanup_jobs()
+    job_id = str(uuid.uuid4())
+    out_dir = Path(output_dir) if output_dir else Path.cwd()
+    total = len(descriptions)
+
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "status": "queued",
+            "created": datetime.now(),
+            "kind": "variant",
+            "total": total,
+            "variant_statuses": ["queued"] * total,
+            "variant_paths": [None] * total,
+            "variant_errors": [None] * total,
+        }
+
+    threading.Thread(
+        target=_run_variant_job,
+        args=(
+            job_id,
+            provider,
+            api_key,
+            list(descriptions),
+            audience,
+            aspect_ratio,
+            resolution,
+            out_dir,
+        ),
+        daemon=True,
+    ).start()
+
+    return job_id
+
+
+def _variant_status(snapshot: dict, elapsed: float) -> str:
+    """Render a variant job's status line (single-image lines live in check_job_status)."""
+    total = snapshot["total"]
+    succeeded = sum(1 for s in snapshot["variant_statuses"] if s == "complete")
+    status = snapshot["status"]
+    if status == "complete":
+        lines = [
+            f"variant {i + 1}: {path}"
+            for i, path in enumerate(snapshot["variant_paths"])
+            if path is not None
+        ]
+        return (
+            f"complete ({elapsed:.0f}s) — {succeeded}/{total} variants saved\n"
+            + "\n".join(lines)
+        )
+    if status == "failed":
+        return f"failed ({elapsed:.0f}s): {snapshot.get('error', 'unknown error')}"
+    if status == "generating":
+        return f"generating ({elapsed:.0f}s elapsed, {succeeded}/{total} complete)"
+    return f"queued ({elapsed:.0f}s elapsed)"
+
+
+@mcp.tool()
 def check_job_status(job_id: str) -> str:
     """Check progress of a diagram job. Poll every ~10s; generation typically takes 30-60s.
 
-    Returns one of:
+    Single-image jobs (start_diagram_job) return one of:
       - "queued (Xs elapsed)"
       - "generating (Xs elapsed, typically 30-60s)"
       - "complete (Xs) — saved to <path>"
       - "failed (Xs): <reason>"
+
+    Variant jobs (start_variant_job) return one of:
+      - "queued (Xs elapsed)"
+      - "generating (Xs elapsed, k/n complete)"
+      - "complete (Xs) — k/n variants saved", followed by one
+        "variant <i>: <path>" line per saved image, in input order
+      - "failed (Xs): <reason>" (no variant succeeded)
     """
     _cleanup_jobs()
     with _jobs_lock:
@@ -565,6 +783,8 @@ def check_job_status(job_id: str) -> str:
         snapshot = dict(job)
 
     elapsed = (datetime.now() - snapshot["created"]).total_seconds()
+    if snapshot.get("kind") == "variant":
+        return _variant_status(snapshot, elapsed)
     status = snapshot["status"]
     if status == "complete":
         return f"complete ({elapsed:.0f}s) — saved to {snapshot['file_path']}"
