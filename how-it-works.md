@@ -1,6 +1,6 @@
 # How etch works
 
-![etch architecture](images/etch_architecture.png)
+![etch image generation pipeline: Claude Code calls the etch MCP server, which routes each job to the one provider selected by the model parameter and saves the PNG to disk](images/etch_pipeline.png)
 
 Under the hood, etch is a thin MCP server wrapping a small provider abstraction over image backends — Google's Gemini 3 Pro Image (Nano Banana Pro) by default, its fast sibling Nano Banana 2 (`gemini-3.1-flash-image`), plus Microsoft's MAI-Image-2.5 — selected per call via the `model` parameter. When your agent calls `start_diagram_job`, the server kicks off generation on a background thread, returns a `job_id` immediately, and lets the agent poll `check_job_status` until the PNG lands on disk. The async split exists so MCP tool-call timeouts don't bite — generation typically runs 30–60 seconds.
 
