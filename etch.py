@@ -10,7 +10,7 @@ from typing import NamedTuple, Optional, Protocol, Sequence
 import httpx
 from google import genai
 from google.genai import types
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 DEFAULT_MODEL = "gemini-3-pro-image-preview"
 NB2_MODEL = "gemini-3.1-flash-image"  # Nano Banana 2, the fast Flash model
@@ -397,7 +397,7 @@ def _load_reference_images(paths: list[str], provider: ImageProvider) -> list[Re
     return images
 
 
-mcp = FastMCP("etch")
+mcp = MCPServer("etch")
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
